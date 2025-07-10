@@ -222,12 +222,7 @@ def main():
 
     with right_col:
         st.markdown('### Enter your Prompt here : ')
-        # custom_prompt = "Visualize the Pythagorean theorem with an animated right triangle and squares on each side."
-        custom_prompt = "draw a circle & a radius from its center to circumference."
-        if 'show_code' not in st.session_state:
-            st.session_state.show_code = False
-        if 'show_video' not in st.session_state:
-            st.session_state.show_video = False
+        custom_prompt = "Visualize the Pythagorean theorem with an animated right triangle and squares on each side."
         user_prompt = st.text_area(
             label="Enter your prompt here",
             value=custom_prompt,
@@ -235,100 +230,81 @@ def main():
             placeholder="Enter your prompt here",
             label_visibility="collapsed"
         )
-        st.markdown('<div class="centered-btn">', unsafe_allow_html=True)
-        if st.button("GenerateCode"):
-            st.session_state.show_code = True
-            st.session_state.show_video = False
         st.markdown('</div>', unsafe_allow_html=True)
 
-        manim_code = '''
-from manim import *
+        st.markdown('<div class="centered-btn">', unsafe_allow_html=True)
+        generate_code = st.button("GenerateCode")
 
-class CircleWithRadius(Scene):
+        manim_code = '''from manim import *
+
+class PythagorasTheorem(Scene):
     def construct(self):
-        # Create the circle
-        circle = Circle(radius=2, color=BLUE)
+        # Create the right triangle
+        triangle = Polygon(
+            [0, 0, 0], [3, 0, 0], [0, 4, 0], color=BLUE
+        )
+        triangle_label = MathTex(r"a", color=WHITE).next_to([1.5, 0, 0], DOWN)
+        triangle_label2 = MathTex(r"b", color=WHITE).next_to([0, 2, 0], LEFT)
+        triangle_label3 = MathTex(r"c", color=WHITE).next_to([1.5, 2, 0], RIGHT)
         
-        # Define center and point on circumference
-        center = circle.get_center()
-        point_on_circumference = center + RIGHT * 2  # radius = 2 units
-
-        # Create radius line
-        radius = Line(start=center, end=point_on_circumference, color=YELLOW)
-
-        # Animate drawing
-        self.play(Create(circle))
-        self.play(Create(radius))
+        # Squares on each side
+        square_a = Square(3, color=GREEN).move_to([1.5, -1.5, 0])
+        square_b = Square(4, color=YELLOW).move_to([-2, 2, 0])
+        square_c = Square(5, color=RED).move_to([3, 4, 0])
+        
+        # Animate triangle
+        self.play(Create(triangle))
+        self.play(Write(triangle_label), Write(triangle_label2), Write(triangle_label3))
         self.wait(1)
-        '''
+        
+        # Animate squares
+        self.play(Create(square_a), Create(square_b))
+        self.wait(1)
+        self.play(Create(square_c))
+        self.wait(2)
+        
+        # Show the relationship
+        theorem = MathTex(r"a^2 + b^2 = c^2", font_size=48).to_edge(UP)
+        self.play(Write(theorem))
+        self.wait(2)
+'''
 
-#         manim_code = '''from manim import *
+        st.markdown('<div class="placeholder-actions">'
+                    '<span id="copy-btn" style="cursor:pointer;">🗐 copy</span> &nbsp;&nbsp; '
+                    '<span>⬈ Export</span>'
+                    '</div>', unsafe_allow_html=True)
+        st.code(manim_code, language="python")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-# class PythagorasTheorem(Scene):
-#     def construct(self):
-#         # Create the right triangle
-#         triangle = Polygon(
-#             [0, 0, 0], [3, 0, 0], [0, 4, 0], color=BLUE
-#         )
-#         triangle_label = MathTex(r"a", color=WHITE).next_to([1.5, 0, 0], DOWN)
-#         triangle_label2 = MathTex(r"b", color=WHITE).next_to([0, 2, 0], LEFT)
-#         triangle_label3 = MathTex(r"c", color=WHITE).next_to([1.5, 2, 0], RIGHT)
-        
-#         # Squares on each side
-#         square_a = Square(3, color=GREEN).move_to([1.5, -1.5, 0])
-#         square_b = Square(4, color=YELLOW).move_to([-2, 2, 0])
-#         square_c = Square(5, color=RED).move_to([3, 4, 0])
-        
-#         # Animate triangle
-#         self.play(Create(triangle))
-#         self.play(Write(triangle_label), Write(triangle_label2), Write(triangle_label3))
-#         self.wait(1)
-        
-#         # Animate squares
-#         self.play(Create(square_a), Create(square_b))
-#         self.wait(1)
-#         self.play(Create(square_c))
-#         self.wait(2)
-        
-#         # Show the relationship
-#         theorem = MathTex(r"a^2 + b^2 = c^2", font_size=48).to_edge(UP)
-#         self.play(Write(theorem))
-#         self.wait(2)
-# '''
-        if st.session_state.show_code:
-            st.markdown('<div class="placeholder-actions">'
-                        '<span id="copy-btn" style="cursor:pointer;">🗐 copy</span> &nbsp;&nbsp; '
-                        '<span>⬈ Export</span>'
-                        '</div>', unsafe_allow_html=True)
-            st.code(manim_code, language="python")
-            st.markdown('''
-            <script>
-            function copyCode() {
-                var codeBlocks = document.querySelectorAll('pre');
-                if (codeBlocks.length > 0) {
-                    var code = codeBlocks[codeBlocks.length-1].innerText;
-                    navigator.clipboard.writeText(code);
-                }
+        st.markdown('''
+        <script>
+        function copyCode() {
+            var codeBlocks = document.querySelectorAll('pre');
+            if (codeBlocks.length > 0) {
+                var code = codeBlocks[codeBlocks.length-1].innerText;
+                navigator.clipboard.writeText(code);
             }
-            document.addEventListener('DOMContentLoaded', function() {
-                var btn = document.getElementById('copy-btn');
-                if (btn) btn.onclick = copyCode;
-            });
-            </script>
-            ''', unsafe_allow_html=True)
-            st.markdown('<div class="centered-btn">', unsafe_allow_html=True)
-            if st.button("GenerateVideo"):
-                st.session_state.show_video = True
-            st.markdown('</div>', unsafe_allow_html=True)
-        if st.session_state.show_video:
-            st.markdown('<div class="placeholder-large">', unsafe_allow_html=True)
-            st.markdown('<div class="video-play"><svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" stroke="#222" stroke-width="4" fill="none"/><polygon points="26,20 48,32 26,44" fill="#222"/></svg></div>', unsafe_allow_html=True)
-            st.markdown('<div style="text-align:center; color:#444; font-size:1.1rem; margin-top:1rem;">Generated video will appear here</div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-            st.markdown('<div class="video-actions">', unsafe_allow_html=True)
-            st.markdown('<button class="download-btn">&#8681; download</button>', unsafe_allow_html=True)
-            st.markdown('<button class="export-btn">&#8680; Export</button>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+        }
+        document.addEventListener('DOMContentLoaded', function() {
+            var btn = document.getElementById('copy-btn');
+            if (btn) btn.onclick = copyCode;
+        });
+        </script>
+        ''', unsafe_allow_html=True)
+
+        st.markdown('<div class="centered-btn">', unsafe_allow_html=True)
+        st.button("GenerateVideo")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="placeholder-large">', unsafe_allow_html=True)
+        st.markdown('<div class="video-play"><svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" stroke="#222" stroke-width="4" fill="none"/><polygon points="26,20 48,32 26,44" fill="#222"/></svg></div>', unsafe_allow_html=True)
+        st.markdown('<div style="text-align:center; color:#444; font-size:1.1rem; margin-top:1rem;">Generated video will appear here</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="video-actions">', unsafe_allow_html=True)
+        st.markdown('<button class="download-btn">&#8681; download</button>', unsafe_allow_html=True)
+        st.markdown('<button class="export-btn">&#8680; Export</button>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
         
 
 if __name__ == "__main__":
