@@ -8,7 +8,6 @@ from tempfile import NamedTemporaryFile
 from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 import torch
-import psutil
 
 # Configuration & Setup
 load_dotenv()
@@ -73,7 +72,6 @@ def load_speech_recognition_model():
 def load_finetuned_mistral_model():
     """
     Loads the fine-tuned Mistral model with LoRA adapters.
-    Skips loading if insufficient RAM is available.
     Cached to prevent reloading on every interaction.
     """
     try:
@@ -84,32 +82,20 @@ def load_finetuned_mistral_model():
             st.error(error_msg)
             return None, None
         
-        # Check available memory
-        available_ram_gb = psutil.virtual_memory().available / (1024**3)
-        print(f"[INFO] Available RAM: {available_ram_gb:.2f} GB")
-        
-        # Minimum RAM required: 16GB for full model, skip if less than 10GB available
-        if available_ram_gb < 10:
-            error_msg = f"Insufficient RAM ({available_ram_gb:.2f} GB available, need 10GB+). Using API fallback."
-            print(f"[WARNING] {error_msg}")
-            st.warning(error_msg)
-            return None, None
-        
         # Check if CUDA is available
         if torch.cuda.is_available():
-            device_map = {"": 0}
+            device_map = {"": 0}  # Use first GPU
             torch_dtype = torch.float16
             print(f"[INFO] Loading on GPU: {torch.cuda.get_device_name(0)}")
         else:
-            device_map = {"": "cpu"}
+            device_map = {"": "cpu"}  # Use CPU
             torch_dtype = torch.float32
-            print("[INFO] Loading on CPU")
+            print("[INFO] Loading on CPU (No CUDA available)")
         
         print(f"[INFO] Loading base model: {BASE_MODEL_PATH}")
         print(f"[INFO] Loading adapters from: {FINETUNED_ADAPTER_PATH}")
-        print(f"[INFO] This will take 2-5 minutes on first load. Please wait...")
         
-        # Load base model
+        # Load base model with proper device mapping
         base_model = AutoModelForCausalLM.from_pretrained(
             BASE_MODEL_PATH,
             torch_dtype=torch_dtype,

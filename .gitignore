@@ -1,1 +1,7 @@
 .env
+./outputs/
+*outputs/
+./venv/
+*venv/
+__pycache__/
+*venv*
