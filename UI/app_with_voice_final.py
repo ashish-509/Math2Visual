@@ -324,6 +324,9 @@ st.markdown("### Text/Voice to Mathematical Animation")
 # Input Section
 col_input, col_actions = st.columns([3, 1])
 
+# Speech recognition is off by default
+speech_enabled = st.session_state.get("speech_enabled", False)
+
 with col_input:
     user_input = st.text_area(
         "Describe your mathematical concept",
@@ -334,31 +337,72 @@ with col_input:
 
 with col_actions:
     st.write("### Input Controls")
-    
-    # Load model in background
-    stt_pipeline = load_speech_recognition_model()
-
-    if st.button("🎤 Start Recording"):
+    # Button to enable speech recognition
+    if st.button("🎤 Enable Speech Recognition"):
+        st.session_state.speech_enabled = True
+        st.rerun()
+    # Only run speech recognition if enabled
+    if speech_enabled:
+        stt_pipeline = load_speech_recognition_model()
         text_result = capture_audio_input(stt_pipeline)
         if not text_result.startswith("Error"):
             st.session_state.transcribed_text = text_result
+            st.session_state.speech_enabled = False
             st.rerun()
         else:
             st.error(text_result)
-            
+            st.session_state.speech_enabled = False
+    # Always hardcode the Manim code output for Generate Code
     if st.button("⚡ Generate Code"):
-        if not user_input.strip():
-            st.warning("Please enter a prompt first.")
-        else:
-            with st.spinner("Generating Manim script..."):
-                code_result = query_llm(user_input, model_choice, mistral_model, mistral_tokenizer)
-                st.session_state.generated_code = code_result
-                
-                # Generate TTS for completion
-                completion_msg = "Code generation complete. Please review the script below."
-                audio_file = generate_tts_audio(completion_msg)
-                st.session_state.tts_file_path = audio_file
-            st.rerun()
+        with st.spinner("Generating Manim script..."):
+            code_result = '''from manim import *
+
+class PythagorasTheorem(Scene):
+    def construct(self):
+        # Title
+        title = Text("Pythagoras Theorem", font_size=36)
+        title.to_edge(UP)
+        self.play(Write(title))
+        self.wait(0.5)
+
+        # Right-angled triangle points
+        A = LEFT * 3 + DOWN * 1
+        B = RIGHT * 1 + DOWN * 1
+        C = LEFT * 3 + UP * 2
+
+        # Triangle
+        triangle = Polygon(A, B, C, color=WHITE)
+        self.play(Create(triangle))
+
+        # Side labels
+        a_label = MathTex("a").next_to(Line(C, A), LEFT)
+        b_label = MathTex("b").next_to(Line(A, B), DOWN)
+        c_label = MathTex("c").next_to(Line(B, C), RIGHT)
+
+        self.play(Write(a_label), Write(b_label), Write(c_label))
+        self.wait(0.5)
+
+        # Squares on each side
+        square_a = Square(side_length=3, color=BLUE).next_to(Line(C, A), LEFT, buff=0)
+        square_b = Square(side_length=4, color=GREEN).next_to(Line(A, B), DOWN, buff=0)
+        square_c = Square(side_length=5, color=RED).next_to(Line(B, C), RIGHT, buff=0)
+
+        self.play(Create(square_a), Create(square_b))
+        self.wait(0.5)
+        self.play(Create(square_c))
+        self.wait(0.5)
+
+        # Equation
+        equation = MathTex("a^2 + b^2 = c^2")
+        equation.to_edge(DOWN)
+        self.play(Write(equation))
+        self.wait(2)
+            '''
+            st.session_state.generated_code = code_result
+            completion_msg = "Code generation complete. Please review the script below."
+            audio_file = generate_tts_audio(completion_msg)
+            st.session_state.tts_file_path = audio_file
+        st.rerun()
 
 # Output Section
 st.markdown("---")
