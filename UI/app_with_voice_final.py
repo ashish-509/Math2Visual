@@ -298,19 +298,19 @@ with st.sidebar:
         
         if mistral_model is not None:
             st.session_state.model_loaded = True
-            status_placeholder.success("✅ Fine-tuned Mistral model loaded successfully!")
+            status_placeholder.success(" Fine-tuned Mistral model loaded successfully!")
             progress_placeholder.empty()
         else:
-            status_placeholder.error("❌ Failed to load fine-tuned model")
+            status_placeholder.error(" Failed to load fine-tuned model")
             progress_placeholder.warning("⚠ Will use API endpoint as fallback")
     
     stt_status = "Active (GPU)" if torch.cuda.is_available() else "Active (CPU)"
-    st.info(f"🎤 STT Engine: {stt_status}")
+    st.info(f" STT Engine: {stt_status}")
     
     if torch.cuda.is_available():
-        st.info(f"🖥️ GPU: {torch.cuda.get_device_name(0)}")
+        st.info(f" GPU: {torch.cuda.get_device_name(0)}")
     else:
-        st.warning("⚠️ No GPU detected - model running on CPU (slower)")
+        st.warning(" No GPU detected - model running on CPU (slower)")
 
     st.markdown("---")
     st.subheader("Animation Parameters")
