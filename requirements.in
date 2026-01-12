@@ -1,0 +1,15 @@
+streamlit
+transformers
+torch
+peft
+sounddevice
+scipy
+numpy
+pydub
+requests
+sentencepiece
+SpeechRecognition
+gTTS
+python-dotenv
+psutil
+bitsandbytes
