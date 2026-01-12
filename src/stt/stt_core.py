@@ -1,9 +1,13 @@
+# Simple Speech-to-Text (STT) core for Math2Visual
+# Uses Distil-Whisper (transformers) if available, else falls back to a dummy STT.
+
 import os
 import logging
 import numpy as np
 import sounddevice as sd
 from typing import Optional
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class STTError(Exception):
@@ -11,16 +15,19 @@ class STTError(Exception):
 
 class BaseSTT:
     def transcribe_buffer(self, audio: np.ndarray, sampling_rate: int) -> str:
+        # Subclasses should implement this!
         raise NotImplementedError()
 
-    def transcribe_from_mic(self, duration: float = 3.0, sampling_rate: int = 16000) -> str:
-        """Record short audio and transcribe. May be overridden."""
+    def transcribe_from_mic(self, duration=3.0, sampling_rate=16000) -> str:
+        """
+        Record audio from the microphone and transcribe it.
+        """
         audio = sd.rec(int(duration * sampling_rate), samplerate=sampling_rate, channels=1, dtype="float32")
         sd.wait()
         audio = np.squeeze(audio)
         return self.transcribe_buffer(audio, sampling_rate)
 
-# Transformer-based STT (Distil-Whisper)
+# Try to import transformers pipeline
 try:
     from transformers import pipeline
     HAS_TRANSFORMERS = True
@@ -28,17 +35,21 @@ except Exception:
     HAS_TRANSFORMERS = False
 
 class DistilWhisperSTT(BaseSTT):
-    def __init__(self, model_id: str = "distil-whisper/distil-large-v3", device: Optional[int] = None):
+    def __init__(self, model_id="distil-whisper/distil-large-v3", device: Optional[int] = None):
         if not HAS_TRANSFORMERS:
             raise STTError("transformers not available")
         self.model_id = model_id
         self.device = device
         try:
-            self.pipe = pipeline("automatic-speech-recognition", model=self.model_id,
-                                 device=device if device is not None else -1, chunk_length_s=30)
+            self.pipe = pipeline(
+                "automatic-speech-recognition",
+                model=self.model_id,
+                device=device if device is not None else -1,
+                chunk_length_s=30
+            )
             logger.info(f"Loaded STT pipeline {model_id}")
         except Exception as e:
-            logger.exception("Failed to load STT model")
+            logger.error(f"Failed to load STT model: {e}")
             raise STTError(str(e))
 
     def transcribe_buffer(self, audio: np.ndarray, sampling_rate: int) -> str:
@@ -46,23 +57,23 @@ class DistilWhisperSTT(BaseSTT):
             out = self.pipe(audio, sampling_rate=sampling_rate)
             return out.get("text", "").strip()
         except Exception as e:
-            logger.exception("STT inference failed")
+            logger.error(f"STT inference failed: {e}")
             raise STTError(str(e))
 
-# Fallback: Very simple offline STT simulator (no model) 
 class FallbackSTT(BaseSTT):
     def __init__(self):
-        logger.warning("Using fallback STT: returns placeholder transcription or requires manual typing.")
+        logger.warning("Using fallback STT: returns empty string, manual input needed.")
 
     def transcribe_buffer(self, audio: np.ndarray, sampling_rate: int) -> str:
-        # We can't do ASR offline; return empty string and UI should prompt manual input.
+        # No real transcription, just a placeholder
         return ""
 
-# Helper factory to attempt model load, else return fallback
+# Helper: Try to load STT model, else fallback
+
 def load_stt_from_env():
     """
     Try to load preferred STT model. If fails, return FallbackSTT.
-    Use environment variables:
+    Uses environment variables:
       M2V_STT_MODEL - model id string (optional)
       M2V_STT_DEVICE - 'cpu' or gpu index (optional)
     """
@@ -78,5 +89,5 @@ def load_stt_from_env():
         stt = DistilWhisperSTT(model_id=model_id, device=device)
         return stt, True, None
     except Exception as e:
-        logger.exception("Could not load DistilWhisper; falling back")
+        logger.error(f"Could not load DistilWhisper: {e}")
         return FallbackSTT(), False, str(e)

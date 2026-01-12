@@ -1,29 +1,26 @@
 """
-STT pipeline using Distil-Whisper (transformers) + math parser + LLM prompt builder.
+Math2Visual STT Pipeline
+- Captures audio from microphone in short chunks.
+- Transcribes speech to text using Distil-Whisper (transformers).
+- Converts spoken math to LaTeX-like expressions.
+- Builds a prompt for the code generator (LLM).
 
 How it works:
-- Captures audio from microphone in short chunks (CHUNK_SECONDS).
-- A worker thread transcribes each chunk using the ASR pipeline.
-- The transcribed natural-speech text is passed to a rule-based math parser to produce LaTeX-like output.
-- The final 'clean prompt' is printed and forwarded to `send_to_llm()`
+1. Audio is captured in chunks (CHUNK_SECONDS).
+2. Each chunk is transcribed to text.
+3. Text is parsed to math (LaTeX-ish).
+4. A prompt is built and sent to the code generator.
 """
 
 import queue
 import threading
 import time
 import sys
-import math
 import re
 import os
-from dataclasses import dataclass
-from typing import Optional
-
 import numpy as np
 import sounddevice as sd
-from scipy.io import wavfile
-
-# Transformers ASR pipeline
-from transformers import pipeline
+from typing import Optional
 
 # CONFIG
 MODEL_ID = "distil-whisper/distil-large-v3"
@@ -32,11 +29,12 @@ CHUNK_SECONDS = 3       # smaller -> lower latency but more requests
 CHANNELS = 1
 MAX_QUEUE_SIZE = 8
 
-# ASR pipeline options (adjust device_map if GPU is available)
-ASR_DEVICE = "cuda" if (os.getenv("CUDA_VISIBLE_DEVICES") is not None or False) else "cpu"
+# Try to use GPU if available
+ASR_DEVICE = "cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu"
 
 # SETUP: ASR pipeline
 print("Loading ASR model... (this can take 10-60s)")
+from transformers import pipeline
 asr_pipe = pipeline(
     task="automatic-speech-recognition",
     model=MODEL_ID,
@@ -50,24 +48,21 @@ audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 stop_flag = threading.Event()
 
 def audio_callback(indata, frames, time_info, status):
-    """Callback runs in audio thread. Buffers frames into chunk buffer."""
+    # Buffers audio frames into chunk buffer
     if status:
         print("Audio status:", status, file=sys.stderr)
-    # Convert to float32 mono numpy array
     audio_callback.buf.append(indata.copy())
 
-# bucket to hold small frames until chunk is full
 audio_callback.buf = []
 
 def producer_stream():
-    """Continuously capture audio in CHUNK_SECONDS chunks and push to queue."""
-    blocksize = int(SAMPLE_RATE * 0.1)  # callback will provide 100ms frames
+    # Continuously capture audio in CHUNK_SECONDS chunks and push to queue
+    blocksize = int(SAMPLE_RATE * 0.1)  # 100ms frames
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
                         blocksize=blocksize, callback=audio_callback):
         print(f">>> Listening (chunk {CHUNK_SECONDS}s). Press Ctrl+C to stop.")
         try:
             while not stop_flag.is_set():
-                # accumulate until CHUNK_SECONDS reached
                 target_frames = int(SAMPLE_RATE * CHUNK_SECONDS)
                 collected = []
                 collected_frames = 0
@@ -81,14 +76,11 @@ def producer_stream():
                 if collected_frames == 0:
                     continue
                 chunk = np.concatenate(collected, axis=0)
-                # Flatten to mono 1D
                 if chunk.ndim > 1:
                     chunk = chunk.mean(axis=1)
-                # Put into queue (non-blocking drop if full)
                 try:
                     audio_queue.put_nowait(chunk.astype(np.float32))
                 except queue.Full:
-                    # if queue full, drop oldest and push new
                     try:
                         _ = audio_queue.get_nowait()
                         audio_queue.put_nowait(chunk.astype(np.float32))
@@ -162,29 +154,20 @@ def math_speech_to_latex(spoken: str) -> str:
     s = spoken.strip()
     s = basic_replacements(s)
     s = apply_patterns(s)
-
-    # numeric words -> digits (simple map; extend as needed)
     num_map = {
-        "zero":"0", "one":"1","two":"2","three":"3","four":"4","five":"5",
-        "six":"6","seven":"7","eight":"8","nine":"9","ten":"10",
-        "negative 1":"-1", "negative one":"-1"
+        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+        "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+        "negative 1": "-1", "negative one": "-1"
     }
     for w, d in num_map.items():
         s = re.sub(rf"\b{w}\b", d, s)
-
-    # tidy some common constructs
-    s = re.sub(r"\b(x|y|z) (\^|\^) (\d+)", r"\1^\3", s)  # safe-guard
+    s = re.sub(r"\b(x|y|z) (\^|\^) (\d+)", r"\1^\3", s)
     s = re.sub(r"\s+([,+\-*=\/\)\}])", r"\1", s)
-    s = re.sub(r"([^\s])\s+([^\s])", r"\1 \2", s)  # one-space between tokens
-
+    s = re.sub(r"([^\s])\s+([^\s])", r"\1 \2", s)
     return s
 
-# LLM PROMPT BUILDER
-def build_llm_prompt(original_text: str, latex_expr: Optional[str]):
-    """
-    Create a clear instruction prompt for code-generating model.
-    Replace or extend to match the exact instruction style used when finetuning Code-LLaMA.
-    """
+# LM PROMPT BUILDER
+def build_llm_prompt(original_text, latex_expr: Optional[str]):
     prompt = "Task: Generate a Manim (Python) script that visualizes the following mathematical request.\n\n"
     prompt += f"User speech (raw): \"{original_text}\"\n\n"
     if latex_expr:
@@ -199,14 +182,9 @@ def build_llm_prompt(original_text: str, latex_expr: Optional[str]):
     )
     return prompt
 
-# ASR Consumer 
-def send_to_llm(prompt: str):
-    """
-    Stub: Replace this with call to the finetuned Code-LLaMA + RAG service.
-    send prompt to your local LLaMA server, or an API endpoint, and return the code.
-    """
-    print("\n>>> [LLM PROMPT READY] (length: %d chars)\n%s\n" % (len(prompt), prompt[:800]))
-
+# ASR Consumer
+def send_to_llm(prompt):
+    print(f"\n>>> [LLM PROMPT READY] (length: {len(prompt)} chars)\n{prompt[:800]}")
     return None
 
 def worker_transcribe_and_parse():
@@ -216,9 +194,6 @@ def worker_transcribe_and_parse():
             chunk = audio_queue.get(timeout=0.5)
         except queue.Empty:
             continue
-        # Convert float32 numpy to int16 WAV bytes (required by some pipelines; transformers accepts numpy)
-        # Sample rate is SAMPLE_RATE
-        # For transformers' pipeline, supplying numpy array with 'sampling_rate' works.
         try:
             asr_result = asr_pipe(chunk, sampling_rate=SAMPLE_RATE)
         except Exception as e:
