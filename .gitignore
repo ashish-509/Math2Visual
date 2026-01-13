@@ -13,3 +13,7 @@ major
 *.pyd
 .Python
 env/
+
+
+plan.md
+
