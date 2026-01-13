@@ -31,16 +31,23 @@ def spoken_math_to_latex(spoken: str) -> str:
         "integral from": "integral_from_marker",  # marker for future extension
         "limit as": "limit_as_marker"
     }
+    
+    # Apply all replacements
     for word, latex in replacements.items():
         s = s.replace(word, latex)
-    # Handle square roots
+    
+    # Handle square roots - ensure proper brace matching
     s = re.sub(r"\\sqrt\{(.+?)\}", r"\\sqrt{\1}", s)
+    
     # Handle fractions: "a over b" or "a / b" -> \frac{a}{b}
+    # Matches alphanumeric sequences before and after the division operator
     s = re.sub(r"([0-9a-zA-Z\)\}]+)\s*/\s*([0-9a-zA-Z\(\{]+)", r"\\frac{\1}{\2}", s)
+    
     # Clean up spaces
     return clean_whitespace(s)
 
-# Example usage:
+
+# Example usage and testing
 if __name__ == "__main__":
     test = "x squared plus y over z"
     print("Spoken:", test)

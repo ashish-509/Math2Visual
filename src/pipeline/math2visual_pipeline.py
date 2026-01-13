@@ -9,6 +9,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class Math2VisualPipeline:
     def __init__(self, llm_client=None):
         # Use provided LLM client or make a new one
@@ -39,7 +40,8 @@ class Math2VisualPipeline:
             return code, True, ""
         except LLMClientError as e:
             logger.error(f"LLM generation failed: {e}")
-            # Fallback code if LLM fails
+            
+            # Fallback code if LLM fails - provides user feedback via Manim scene
             fallback = (
                 "# Fallback Manim snippet\n"
                 "from manim import *\n\n"

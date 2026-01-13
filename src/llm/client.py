@@ -10,7 +10,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class LLMClientError(Exception):
+    """
+    Custom exception raised when LLM client operations fail.
+    
+    This exception is raised for network errors, invalid responses,
+    or server-side failures during code generation requests.
+    """
     pass
+
 
 class LLMClient:
     def __init__(self, endpoint=None):
