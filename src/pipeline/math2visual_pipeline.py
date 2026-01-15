@@ -21,9 +21,21 @@ logger = logging.getLogger(__name__)
 
 
 class Math2VisualPipeline:
-    def __init__(self, llm_client=None, use_rag=True, doc_path=None):
-        # Use provided LLM client or make a new one
-        self.llm = llm_client or LLMClient()
+    def __init__(self, llm_client=None, use_rag=True, doc_path=None, preferred_model='mistral'):
+        """
+        Initialize the Math2Visual pipeline
+        
+        llm_client: optional custom LLM client (if None, creates one with multi-model support)
+        use_rag: whether to use RAG for documentation retrieval
+        doc_path: path to documentation file
+        preferred_model: which LLM to prefer ('mistral', 'codellama', or 'phi2')
+        """
+        # setup LLM client with multi-model support
+        if llm_client:
+            self.llm = llm_client
+        else:
+            # create client with automatic fallback between models
+            self.llm = LLMClient(preferred_model=preferred_model)
         
         # RAG setup
         self.use_rag = use_rag
@@ -130,3 +142,23 @@ class Math2VisualPipeline:
         if self.rag:
             return self.rag.get_stats()
         return {"status": "disabled"}
+    
+    def get_model_status(self):
+        """
+        Get health status of all available LLM models
+        Useful for debugging which models are working
+        """
+        return self.llm.get_model_status()
+    
+    def switch_model(self, model_name):
+        """
+        Switch preferred model (mistral, codellama, or phi2)
+        The pipeline will try this model first on next generation
+        """
+        if model_name in self.llm.models:
+            self.llm.preferred_model = model_name
+            logger.info(f"Switched preferred model to: {model_name}")
+            return True
+        else:
+            logger.warning(f"Model '{model_name}' not available")
+            return False
