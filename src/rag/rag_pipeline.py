@@ -1,4 +1,3 @@
-# Complete RAG pipeline for Manim docs
 # Loads docs, chunks them, builds index, retrieves relevant context
 
 import os

@@ -1,6 +1,4 @@
-# Simple spoken math to LaTeX parser
 # Converts basic spoken math phrases to LaTeX code.
-# Extend the rules below for more math expressions!
 
 import re
 from typing import Tuple

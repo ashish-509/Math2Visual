@@ -1,4 +1,3 @@
-# Document chunking utilities
 # Takes large docs and splits them into smaller pieces for better retrieval
 
 import re

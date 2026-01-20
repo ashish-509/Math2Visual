@@ -1,6 +1,4 @@
-# Math2Visual Pipeline
 # Converts spoken math to LaTeX, builds a prompt, and gets Manim code from an LLM.
-# Now with RAG support for retrieving relevant Manim documentation
 
 import sys
 import os
@@ -56,7 +54,6 @@ class Math2VisualPipeline:
 
     def build_prompt(self, raw_text, latex, context=""):
         # Create a prompt for the LLM to generate Manim code
-        # Now includes retrieved documentation context if available
         
         prompt = ""
         
@@ -146,7 +143,6 @@ class Math2VisualPipeline:
     def get_model_status(self):
         """
         Get health status of all available LLM models
-        Useful for debugging which models are working
         """
         return self.llm.get_model_status()
     

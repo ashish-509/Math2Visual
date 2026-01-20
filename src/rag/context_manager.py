@@ -1,4 +1,3 @@
-# Context management for LLM prompts
 # Makes sure we dont exceed token limits when adding retrieved docs
 
 class ContextManager:

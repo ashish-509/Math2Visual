@@ -1,5 +1,4 @@
 # Retrieval using TF-IDF
-# No heavy dependencies needed, works well for technical docs
 
 import re
 import math

@@ -1,7 +1,5 @@
-# Multi-Model LLM client for Math2Visual
 # This code handles talking to different AI models (Mistral, CodeLlama, Phi-2)
 # If one model doesn't work, it automatically tries another one
-# This makes the system more reliable
 
 import os
 import requests
@@ -31,8 +29,6 @@ class LLMClient:
     def __init__(self, preferred_model='mistral', model_endpoints=None):
         """
         Set up the client to talk to multiple AI models.
-
-        preferred_model: which model to try first ('mistral', 'codellama', or 'phi2')
         model_endpoints: custom web addresses for models (optional)
         """
         # Get the web addresses for each model
@@ -60,7 +56,6 @@ class LLMClient:
     
     def check_health(self, model_name, timeout_seconds=5):
         """
-        Check if a model is working and responding.
         Returns True if the model is healthy, False if it's not.
         """
         address = self.model_endpoints.get(model_name)

@@ -1,4 +1,3 @@
-# Simple Speech-to-Text (STT) core for Math2Visual
 # Uses Distil-Whisper (transformers) if available, else falls back to a dummy STT.
 
 import os
