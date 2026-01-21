@@ -69,7 +69,6 @@ def load_speech_recognition_model():
 @st.cache_resource
 def get_llm_client():
     """
-    Get the multi-model LLM client.
     This handles switching between different AI models automatically.
     """
     return LLMClient()
@@ -138,7 +137,6 @@ def generate_tts_audio(text):
 
 def generate_manim_code(prompt, model_choice):
     """
-    Generate Manim code using the selected AI model.
     The LLMClient handles model switching and fallbacks automatically.
     """
     try:
@@ -260,7 +258,7 @@ if st.session_state.generated_code:
         st.audio(st.session_state.tts_file_path, format="audio/mp3")
         
         # Option to read the code summary (simulated)
-        if st.button("📖 Read Code Explanation"):
+        if st.button(" Read Code Explanation"):
             explanation_text = f"This code creates a scene specifically for {user_input[:50]}..."
             explanation_audio = generate_tts_audio(explanation_text)
             st.audio(explanation_audio, format="audio/mp3")

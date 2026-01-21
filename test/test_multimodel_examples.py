@@ -1,6 +1,3 @@
-# Example: Using Math2Visual with Multiple Models
-# Shows how to initialize and use different models
-
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -9,7 +6,7 @@ from pipeline.math2visual_pipeline import Math2VisualPipeline
 
 def example_basic_usage():
     """Basic usage with default model (Mistral)"""
-    print("=== Example 1: Basic Usage ===\n")
+    print(" Example 1: Basic Usage \n")
     
     # create pipeline with default settings
     pipeline = Math2VisualPipeline(use_rag=True, preferred_model='mistral')
@@ -26,13 +23,13 @@ def example_basic_usage():
     code, success, error = pipeline.generate_code("draw a blue circle")
     
     if success:
-        print(f"✓ Generated {len(code)} characters of code")
+        print(f" Generated {len(code)} characters of code")
     else:
-        print(f"✗ Failed: {error}")
+        print(f" Failed: {error}")
 
 def example_model_switching():
     """How to switch between models dynamically"""
-    print("\n=== Example 2: Switching Models ===\n")
+    print("\n Example 2: Switching Models \n")
     
     pipeline = Math2VisualPipeline(preferred_model='mistral')
     
@@ -51,15 +48,15 @@ def example_model_switching():
     code3, success3, _ = pipeline.generate_code("animate text")
     
     print(f"\nResults:")
-    print(f"  Mistral: {'✓' if success1 else '✗'}")
-    print(f"  CodeLlama: {'✓' if success2 else '✗'}")
-    print(f"  Phi-2: {'✓' if success3 else '✗'}")
+    print(f"  Mistral: {'' if success1 else ''}")
+    print(f"  CodeLlama: {'' if success2 else ''}")
+    print(f"  Phi-2: {'' if success3 else ''}")
 
 def example_custom_endpoints():
     """Using custom model endpoints"""
-    print("\n=== Example 3: Custom Endpoints ===\n")
+    print("\n Example 3: Custom Endpoints \n")
     
-    # you can override endpoints via environment variables
+    # we can override endpoints via environment variables
     # or pass a custom client with your own config
     
     from llm.client import LLMClient
@@ -79,7 +76,7 @@ def example_custom_endpoints():
 
 def example_rag_with_multimodel():
     """Combining RAG with multi-model support"""
-    print("\n=== Example 4: RAG + Multi-Model ===\n")
+    print("\n Example 4: RAG + Multi-Model \n")
     
     # RAG will retrieve relevant Manim docs
     # Multi-model will try different LLMs if one fails
@@ -100,13 +97,12 @@ def example_rag_with_multimodel():
     code, success, error = pipeline.generate_code("animate a circle growing")
     
     if success:
-        print(f"✓ Success! Generated {len(code)} chars")
+        print(f" Success! Generated {len(code)} chars")
     else:
-        print(f"✗ All models failed: {error}")
+        print(f" All models failed: {error}")
 
 if __name__ == "__main__":
     print("Math2Visual Multi-Model Examples")
-    print("=" * 50)
     print("\nNote: These examples require LLM servers running")
     print("Start at least one model server to see full functionality\n")
     
@@ -120,5 +116,4 @@ if __name__ == "__main__":
         print(f"\nError running examples: {e}")
         print("This is expected if no model servers are running")
     
-    print("\n" + "=" * 50)
     print("Examples complete!")

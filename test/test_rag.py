@@ -1,4 +1,3 @@
-# Test script for RAG pipeline
 # Run this to verify chunking, retrieval, and context management work correctly
 
 import sys

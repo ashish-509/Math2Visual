@@ -1,6 +1,3 @@
-# Test the multi-model system with health checks and automatic fallback
-# This shows how the system switches between different AI models when one fails
-
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -23,7 +20,7 @@ def test_multi_model_system():
     status = client.get_model_status()
 
     for model_name, info in status.items():
-        health_icon = "✓ Working" if info['healthy'] else "✗ Not working"
+        health_icon = " Working" if info['healthy'] else "✗ Not working"
         preferred_mark = " (first choice)" if info['preferred'] else ""
         print(f"  {health_icon} {model_name}: {info['address']}{preferred_mark}")
 
