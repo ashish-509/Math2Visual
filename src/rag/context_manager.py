@@ -88,9 +88,14 @@ class ContextManager:
         # Rough token count estimate
         return len(text) // self.chars_per_token
     
-    def truncate_to_limit(self, text):
+    def truncate_to_limit(self, text, max_tokens=None):
         # Truncate text to fit within token limit
-        if len(text) <= self.max_chars:
+        if max_tokens is None:
+            limit_chars = self.max_chars
+        else:
+            limit_chars = max_tokens * self.chars_per_token
+        
+        if len(text) <= limit_chars:
             return text
         
-        return text[:self.max_chars] + "\n\n[Content truncated to fit token limit]"
+        return text[:limit_chars] + "\n\n[Content truncated to fit token limit]"
