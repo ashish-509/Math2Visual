@@ -13,3 +13,4 @@ gTTS
 python-dotenv
 psutil
 bitsandbytes
+groq
