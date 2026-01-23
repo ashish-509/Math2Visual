@@ -5,11 +5,48 @@ import speech_recognition as sr
 from dotenv import load_dotenv
 from gtts import gTTS
 from tempfile import NamedTemporaryFile
-from transformers import pipeline
 import torch
+import sys
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Add the project root to Python path to import src modules
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 # Import our custom LLM client for multi-model support
-from src.llm.client import LLMClient
+try:
+    from src.llm.client import LLMClient
+    llm_import_success = True
+except ImportError as e:
+    llm_import_success = False
+    llm_import_error = str(e)
+
+# Import the RAG + Finetuned Model pipeline
+try:
+    from src.pipeline.rag_finetuned_pipeline import get_rag_finetuned_pipeline
+    rag_finetuned_import_success = True
+except ImportError as e:
+    rag_finetuned_import_success = False
+    rag_finetuned_import_error = str(e)
+
+# Import Groq client for CodeLlama API
+try:
+    from src.llm.groq_client import get_groq_client
+    groq_import_success = True
+except ImportError as e:
+    groq_import_success = False
+    groq_import_error = str(e)
+
+# Import transformers pipeline
+try:
+    from transformers import pipeline
+    transformers_import_success = True
+except ImportError as e:
+    transformers_import_success = False
+    transformers_import_error = str(e)
 
 # Load environment variables
 load_dotenv()
@@ -54,6 +91,10 @@ def load_speech_recognition_model():
     Load the Whisper model for speech-to-text.
     This is cached so we don't reload it every time.
     """
+    if not transformers_import_success:
+        st.error(f"Transformers library not available: {transformers_import_error}")
+        return None
+    
     try:
         pipe = pipeline(
             "automatic-speech-recognition",
@@ -67,11 +108,41 @@ def load_speech_recognition_model():
 
 # Create and cache the LLM client
 @st.cache_resource
-def get_llm_client():
+def get_llm_client(preferred_model='mistral'):
     """
     This handles switching between different AI models automatically.
     """
-    return LLMClient()
+    return LLMClient(preferred_model=preferred_model)
+
+# Create and cache the RAG pipeline (for retrieving Manim documentation)
+@st.cache_resource
+def get_standalone_rag():
+    """
+    Get a standalone RAG pipeline for retrieving Manim documentation context.
+    This is used with Groq API models (CodeLlama, Phi-2).
+    """
+    try:
+        from src.rag.rag_pipeline import create_rag_pipeline
+        rag = create_rag_pipeline()
+        return rag
+    except Exception as e:
+        logger.error(f"Failed to create RAG pipeline: {e}")
+        return None
+
+# Create and cache the RAG + Finetuned Model pipeline
+@st.cache_resource
+def get_rag_pipeline():
+    """
+    RAG retrieves relevant Manim documentation, then the finetuned model generates code.
+    """
+    if not rag_finetuned_import_success:
+        return None
+    
+    pipeline = get_rag_finetuned_pipeline()
+    # Initialize it (loads docs and prepares the model)
+    if not pipeline.initialize():
+        return None
+    return pipeline
 
 def capture_audio_input(pipeline_stt):
     """
@@ -90,9 +161,9 @@ def capture_audio_input(pipeline_stt):
             st.info("Adjusting for background noise...")
             recognizer.adjust_for_ambient_noise(source, duration=1)
 
-            st.info("Listening... (Speak now)")
-            # Listen for up to 10 seconds to start, then unlimited speaking
-            audio_data = recognizer.listen(source, timeout=10, phrase_time_limit=None)
+            st.info("Listening for 10 seconds... (Speak now)")
+            # Listen for up to 10 seconds to start, then fixed 7 seconds speaking
+            audio_data = recognizer.listen(source, timeout=10, phrase_time_limit=7)
 
             st.info("Processing your speech...")
 
@@ -137,25 +208,76 @@ def generate_tts_audio(text):
 
 def generate_manim_code(prompt, model_choice):
     """
-    The LLMClient handles model switching and fallbacks automatically.
+    Generate Manim code using the selected model.
+    All models integrate with RAG for Manim documentation context.
+    
+    For Mistral-7B (Finetuned): Uses RAG + finetuned model pipeline
+    For CodeLlama-34B: Uses RAG + Groq API (llama-3.1-70b-versatile)
+    For Phi-2: Uses RAG + Groq API (llama-3.1-8b-instant)
     """
-    try:
-        # Map UI model names to client model names
-        model_map = {
-            "Mistral-7B": "mistral",
-            "CodeLlama-34B": "codellama",
-            "Phi-2": "phi2"
-        }
+    if not prompt or not prompt.strip():
+        return "# Error: Please enter a description of what you want to visualize"
+    
+    # Use the finetuned model with RAG for Mistral
+    if model_choice == "Mistral-7B (Finetuned)":
+        if not rag_finetuned_import_success:
+            return f"# Error: RAG + Finetuned model not available. {rag_finetuned_import_error}"
+        
+        try:
+            # Get the RAG + Finetuned pipeline
+            rag_pipeline = get_rag_pipeline()
+            
+            if rag_pipeline is None:
+                return "# Error: Could not initialize the RAG + Finetuned model pipeline"
+            
+            # Generate code using RAG context + finetuned model
+            code = rag_pipeline.generate_manim_code(prompt, use_rag=True)
+            return code
+            
+        except Exception as e:
+            st.warning(f"Finetuned model failed ({str(e)[:100]}...), falling back to CodeLlama-34B")
+            model_choice = "CodeLlama-34B"
+    
+    # Use Groq API for CodeLlama or Phi-2 (with RAG context)
+    if model_choice in ["CodeLlama-34B", "Phi-2"]:
+        if not groq_import_success:
+            return f"# Error: Groq client not available. {groq_import_error}"
+        
+        try:
+            # Get RAG context first
+            rag = get_standalone_rag()
+            context = ""
+            if rag and rag.is_indexed:
+                context = rag.retrieve_context(prompt)
+            
+            # Build augmented prompt with RAG context
+            if context:
+                augmented_prompt = f"""Use the following Manim documentation as reference:
 
-        client = get_llm_client()
-        model_name = model_map.get(model_choice, "mistral")
+=== MANIM DOCUMENTATION ===
+{context}
+=== END DOCUMENTATION ===
 
-        # Generate the code using our multi-model client
-        code = client.generate(prompt, model_name)
-        return code
+User Request: {prompt}
 
-    except Exception as e:
-        return f"# Error generating code: {str(e)}"
+Generate complete, working Manim code based on the documentation above."""
+            else:
+                augmented_prompt = prompt
+            
+            # Get Groq client for the selected model
+            model_type = "codellama" if model_choice == "CodeLlama-34B" else "phi2"
+            groq_client = get_groq_client(model_type)
+            
+            # Generate code with Groq API
+            code = groq_client.generate(augmented_prompt, max_tokens=2048, temperature=0.7)
+            return code
+            
+        except Exception as e:
+            st.error(f"Groq API error: {str(e)}")
+            return f"# Error: {str(e)}\n# Make sure GROQ_API_KEY is set in .env file"
+    
+    # Fallback for unknown model
+    return f"# Error: Unknown model choice: {model_choice}"
 
 # Initialize session state variables
 if "transcribed_text" not in st.session_state:
@@ -165,7 +287,7 @@ if "generated_code" not in st.session_state:
 if "tts_file_path" not in st.session_state:
     st.session_state.tts_file_path = None
 if "model_choice" not in st.session_state:
-    st.session_state.model_choice = "Mistral-7B"  # Default model
+    st.session_state.model_choice = "CodeLlama-34B"  # Default to available model
 
 # Main UI Layout
 
@@ -174,32 +296,73 @@ with st.sidebar:
     st.header("Settings")
 
     st.subheader("AI Model Selection")
+    # Only show finetuned model if GPU is available
+    if torch.cuda.is_available():
+        model_options = ["Mistral-7B (Finetuned)", "CodeLlama-34B", "Phi-2"]
+    else:
+        model_options = ["CodeLlama-34B", "Phi-2"]
+    
     model_choice = st.selectbox(
         "Choose AI Model",
-        ["Mistral-7B", "CodeLlama-34B", "Phi-2"],
-        index=["Mistral-7B", "CodeLlama-34B", "Phi-2"].index(st.session_state.model_choice)
+        model_options,
+        index=model_options.index(st.session_state.model_choice) if st.session_state.model_choice in model_options else 0
     )
 
     # Update session state if model changed
     if model_choice != st.session_state.model_choice:
         st.session_state.model_choice = model_choice
-
-    stt_status = "Active (GPU)" if torch.cuda.is_available() else "Active (CPU)"
-    st.info(f" STT Engine: {stt_status}")
     
-    if torch.cuda.is_available():
-        st.info(f" GPU: {torch.cuda.get_device_name(0)}")
-    else:
-        st.warning(" No GPU detected - model running on CPU (slower)")
+    # Show info about the selected model
+    if model_choice == "Mistral-7B (Finetuned)":
+        st.success("Using finetuned Mistral with RAG")
+        st.info("Local finetuned model + Manim docs")
+    elif model_choice == "CodeLlama-34B":
+        st.success("Using Groq API + RAG")
+        st.info("llama-3.1-70b-versatile + Manim docs")
+    elif model_choice == "Phi-2":
+        st.success("Using Groq API + RAG")
+        st.info("llama-3.1-8b-instant + Manim docs")
+    
 
-    st.markdown("---")
-    st.subheader("Animation Parameters")
-    resolution = st.select_slider("Resolution", options=["480p", "720p", "1080p", "4K"], value="1080p")
-    duration = st.number_input("Max Duration (sec)", min_value=10, max_value=300, value=60)
+    # LLM Health Check Section
+    st.subheader("LLM Health Status")
+
+    # Health for Mistral Finetuned Model (local, GPU only)
+    if torch.cuda.is_available():
+        if rag_finetuned_import_success:
+            try:
+                rag_pipeline = get_rag_pipeline()
+                if rag_pipeline is not None:
+                    color = "#00FF00"
+                    st.markdown(f"<span style='color:{color};font-weight:bold'>Mistral-7B (Finetuned) - Healthy</span>", unsafe_allow_html=True)
+                else:
+                    color = "#FF0000"
+                    st.markdown(f"<span style='color:{color};font-weight:bold'>Mistral-7B (Finetuned) - Unhealthy</span>", unsafe_allow_html=True)
+            except Exception as e:
+                color = "#FF0000"
+                st.markdown(f"<span style='color:{color};font-weight:bold'>Mistral-7B (Finetuned) - Unhealthy ({str(e)[:50]})</span>", unsafe_allow_html=True)
+        else:
+            color = "#FF0000"
+            st.markdown(f"<span style='color:{color};font-weight:bold'>Mistral-7B (Finetuned) - Not Available</span>", unsafe_allow_html=True)
+    
+    # Health for Groq API models
+    if groq_import_success:
+        try:
+            for model_type, label in [("codellama", "CodeLlama-34B"), ("phi2", "Phi-2")]:
+                groq_client = get_groq_client(model_type=model_type)
+                status = groq_client.get_status()
+                color = "#00FF00" if status.get("api_key_set") else "#FF0000"
+                status_text = "Healthy" if status.get("api_key_set") else "Unhealthy (No API Key)"
+                st.markdown(f"<span style='color:{color};font-weight:bold'>{label} (Groq API) - {status_text}</span>", unsafe_allow_html=True)
+        except Exception as e:
+            color = "#FF0000"
+            st.markdown(f"<span style='color:{color};font-weight:bold'>Groq API - Error: {str(e)[:50]}</span>", unsafe_allow_html=True)
+    else:
+        color = "#FF0000"
+        st.markdown(f"<span style='color:{color};font-weight:bold'>Groq API - Not Available</span>", unsafe_allow_html=True)
 
 # Main Content
 st.title("Math2Visual Studio")
-st.markdown("### Text/Voice to Mathematical Animation")
 
 # Input Section
 col_input, col_actions = st.columns([3, 1])
