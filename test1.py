@@ -2,54 +2,35 @@ from manim import *
 
 class DeriveCircleArea(Scene):
     def construct(self):
-        # Title
-        title = Text("Derivation of Circle Area Formula")
-        self.play(Write(title))
-        self.wait()
+        # Step 1: Draw a circle
+        circle = Circle(radius=2, color=BLUE).set_opacity(0.5)
+        self.add(circle)
 
-        # Introduction
-        intro = Text("To find the area of a circle, we can use the following steps:")
-        self.play(Write(intro))
-        self.wait()
+        # Step 2: Label the circle
+        label = Text("Circle").next_to(circle, RIGHT)
+        self.add(label)
 
-        # Step 1: Divide the circle into sectors
-        step1 = Text("Step 1: Divide the circle into sectors")
-        self.play(Write(step1))
-        self.wait()
-        circle = Circle(radius=1)
-        self.play(FadeIn(circle))
-        self.wait()
-        sectors = VGroup(*[Circle(radius=1, color=GREEN) for _ in range(10)])
-        for sector in sectors:
-            self.play(FadeIn(sector))
-            self.wait(0.5)
-        self.wait()
+        # Step 3: Define the formula for the area of a circle
+        formula = MathTex(r"A = \pi r^2").shift(UP)
 
-        # Step 2: Find the area of each sector
-        step2 = Text("Step 2: Find the area of each sector")
-        self.play(Write(step2))
-        self.wait()
-        sector_angle = MathTex("\\theta")
-        self.play(FadeIn(sector_angle))
-        self.wait()
-        sector_area = MathTex("\\frac{1}{2}r^2\\sin\\theta")
-        self.play(FadeIn(sector_area))
-        self.wait()
+        # Step 4: Derive the formula
+        self.play(Write(formula))
 
-        # Step 3: Sum the areas of all sectors
-        step3 = Text("Step 3: Sum the areas of all sectors")
-        self.play(Write(step3))
-        self.wait()
-        total_area = MathTex("\\pi r^2")
-        self.play(FadeIn(total_area))
-        self.wait()
+        # Step 5: Explain the derivation
+        explanation = Text("The area of a circle is equal to pi times the radius squared.")
+        explanation.shift(DOWN)
+        self.play(Write(explanation))
 
-        # Conclusion
-        conclusion = Text("Therefore, the area of a circle is \\pi r^2.")
-        self.play(Write(conclusion))
-        self.wait()
+        # Step 6: Visualize the formula
+        self.play(ReplacementTransform(formula, MathTex(r"A = \pi (\frac{d}{2})^2").shift(UP)))
 
-        # Final circle
-        final_circle = Circle(radius=1, color=BLUE)
-        self.play(FadeIn(final_circle))
-        self.wait()
+        # Step 7: Explain the final formula
+        final_explanation = Text("Since the diameter is twice the radius, we can substitute d/2 for r.")
+        final_explanation.shift(DOWN)
+        self.play(Write(final_explanation))
+
+        # Step 8: Show the final formula
+        self.play(Write(MathTex(r"A = \frac{\pi d^2}{4}").shift(UP)))
+
+        # Step 9: Wait for 2 seconds
+        self.wait(2)

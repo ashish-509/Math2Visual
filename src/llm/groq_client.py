@@ -19,7 +19,7 @@ class GroqClient:
     
     # Available models on Groq
     MODELS = {
-        "codellama": "llama-3.1-70b-versatile",  # Best for code generation
+        "codellama": "llama-3.3-70b-versatile",  # Best for code generation
         "phi2": "llama-3.1-8b-instant"           # Faster, lighter model
     }
     
