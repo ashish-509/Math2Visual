@@ -418,6 +418,98 @@ Generate complete, working Manim code based on the documentation above."""
     # Fallback for unknown model
     return f"# Error: Unknown model choice: {model_choice}"
 
+
+def generate_teaching_script(animation_description, manim_code, model_choice):
+    """
+    Generate a beginner-friendly teaching script that explains the animation.
+    
+    This function uses the LLM to create an educational script that:
+    - Explains the animation in simple, easy-to-understand language
+    - Is suitable for children and beginners
+    - Describes each step of the animation clearly
+    
+    Args:
+        animation_description: What the user wanted to visualize
+        manim_code: The generated Manim code
+        model_choice: Which LLM to use for generation
+    
+    Returns:
+        A teaching script as a string
+    """
+    # Check if we have the required inputs
+    if not animation_description or not animation_description.strip():
+        return "Error: Please provide a description of the animation first."
+    
+    if not manim_code or not manim_code.strip():
+        return "Error: Please generate the animation code first."
+    
+    # Build a prompt that encourages simple, beginner-friendly explanations
+    teaching_prompt = f"""You are a friendly teacher explaining a math animation to young students and beginners.
+
+The student asked to see: "{animation_description}"
+
+Here is the animation code that was created:
+```python
+{manim_code}
+```
+
+Please write a teaching script that:
+1. Uses very simple words that a 10-year-old can understand
+2. Explains what happens in the animation step by step
+3. Makes the math concept fun and interesting
+4. Uses examples from everyday life when possible
+5. Is encouraging and positive
+6. Is length is suitable as per the length of the animational video or the manim code generated
+
+Start with a friendly greeting and end with a summary of what we learned.
+Do NOT include any code in your explanation - just explain the concepts simply.
+"""
+    
+    # Use the selected model to generate the teaching script
+    if model_choice == "Mistral-7B (Finetuned)":
+        if not rag_finetuned_import_success:
+            return f"Error: Finetuned model not available. {rag_finetuned_import_error}"
+        
+        try:
+            # Get the finetuned pipeline
+            rag_pipeline = get_rag_pipeline()
+            
+            if rag_pipeline is None:
+                return "Error: Could not initialize the model pipeline"
+            
+            # Generate teaching script (no RAG needed for explanations)
+            script = rag_pipeline.generate_manim_code(teaching_prompt, use_rag=False)
+            return script
+            
+        except Exception as e:
+            logger.warning(f"Finetuned model failed: {e}")
+            # Fall back to Groq API
+            model_choice = "CodeLlama-34B"
+    
+    # Use Groq API for CodeLlama or Phi-2
+    if model_choice in ["CodeLlama-34B", "Phi-2"]:
+        if not groq_import_success:
+            return f"Error: Groq client not available. {groq_import_error}"
+        
+        try:
+            # Get the appropriate Groq client
+            model_type = "codellama" if model_choice == "CodeLlama-34B" else "phi2"
+            groq_client = get_groq_client(model_type)
+            
+            # Generate the teaching script
+            script = groq_client.generate(
+                teaching_prompt, 
+                max_tokens=1024,  # Teaching scripts don't need to be too long
+                temperature=0.8   # Slightly higher for more creative explanations
+            )
+            return script
+            
+        except Exception as e:
+            logger.error(f"Groq API error: {e}")
+            return f"Error generating teaching script: {str(e)}"
+    
+    return f"Error: Unknown model choice: {model_choice}"
+
 # Initialize session state variables
 if "transcribed_text" not in st.session_state:
     st.session_state.transcribed_text = ""
@@ -433,6 +525,10 @@ if "video_error" not in st.session_state:
     st.session_state.video_error = None
 if "video_quality" not in st.session_state:
     st.session_state.video_quality = "medium"
+if "teaching_script" not in st.session_state:
+    st.session_state.teaching_script = ""
+if "teaching_audio_path" not in st.session_state:
+    st.session_state.teaching_audio_path = None
 
 # Main UI Layout
 
@@ -636,6 +732,87 @@ if st.session_state.generated_code:
                 file_name=os.path.basename(st.session_state.video_path),
                 mime="video/mp4"
             )
+        
+        # Teaching Script Generation Section
+        st.markdown("---")
+        st.subheader(" Generate Teaching Script")
+        
+        col_teach_btn, col_teach_info = st.columns([1, 2])
+        
+        with col_teach_btn:
+            if st.button(" Generate Teaching Script", type="secondary"):
+                with st.spinner("Creating a fun, easy-to-understand explanation..."):
+                    # Generate the teaching script
+                    teaching_result = generate_teaching_script(
+                        user_input,
+                        st.session_state.generated_code,
+                        st.session_state.model_choice
+                    )
+                    
+                    # Check if generation was successful
+                    if teaching_result.startswith("Error"):
+                        st.error(teaching_result)
+                    else:
+                        st.session_state.teaching_script = teaching_result
+                        # Also generate the audio for the teaching script
+                        st.session_state.teaching_audio_path = generate_tts_audio(teaching_result)
+                
+                st.rerun()
+        
+        with col_teach_info:
+            st.info("The AI will explain the animation in simple words, perfect for students and beginners!")
+        
+        # Display the teaching script if available
+        if st.session_state.teaching_script:
+            st.markdown("---")
+            st.subheader(" Teaching Script")
+            
+            # Display in a nice text area (editable)
+            edited_script = st.text_area(
+                "Teaching explanation :",
+                value=st.session_state.teaching_script,
+                height=300,
+                key="teaching_script_editor"
+            )
+            
+            # Update session state if edited
+            if edited_script != st.session_state.teaching_script:
+                st.session_state.teaching_script = edited_script
+                # Regenerate audio if script was edited
+                st.session_state.teaching_audio_path = None
+            
+            # Audio playback section for teaching script
+            st.markdown("---")
+            st.subheader(" Listen to the Explanation")
+            
+            col_audio1, col_audio2 = st.columns([1, 1])
+            
+            with col_audio1:
+                # Button to generate/regenerate audio
+                if st.button(" Generate Audio Narration"):
+                    with st.spinner("Converting to speech..."):
+                        st.session_state.teaching_audio_path = generate_tts_audio(
+                            st.session_state.teaching_script
+                        )
+                    st.rerun()
+            
+            with col_audio2:
+                if st.session_state.teaching_audio_path:
+                    st.success("Audio ready! Click play below.")
+            
+            # Play the audio if available
+            if st.session_state.teaching_audio_path and os.path.exists(st.session_state.teaching_audio_path):
+                st.audio(st.session_state.teaching_audio_path, format="audio/mp3")
+                
+                # Download button for audio
+                with open(st.session_state.teaching_audio_path, "rb") as audio_file:
+                    audio_bytes = audio_file.read()
+                    st.download_button(
+                        label=" Download Audio",
+                        data=audio_bytes,
+                        file_name="teaching_script_audio.mp3",
+                        mime="audio/mp3"
+                    )
     
     # Audio Feedback Section
     st.markdown("---")
