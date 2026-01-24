@@ -15,3 +15,6 @@ psutil
 bitsandbytes
 groq
 manim
+fastapi
+uvicorn
+ffmpeg

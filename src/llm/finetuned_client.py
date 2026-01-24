@@ -183,14 +183,30 @@ class FinetunedMistralClient:
         Format the prompt for the finetuned model.
         Uses a clear structure that the model was trained on.
         """
-        system_message = """You are a Manim code expert. Generate clean, working Manim code.
-Follow these rules:
-1. Use standard ASCII characters only (no special unicode symbols)
+        system_message = """You are a Manim code expert. Generate clean, working Manim code using modern Manim Community Edition API.
+
+IMPORTANT - Use these CORRECT modern Manim methods:
+- Use Create() instead of ShowCreation() 
+- Use Uncreate() instead of ShowDestruction()
+- Use FadeIn() and FadeOut() for fading
+- Use Transform() for morphing between objects
+- Use Write() for text and equations
+- Use DrawBorderThenFill() for shapes
+- Use self.play() to animate
+- Use self.wait() to pause
+
+For math equations:
+- Use MathTex(r"...") for LaTeX math (raw strings)
+- Use Text("...") for plain text (ASCII only)
+
+Rules:
+1. Use standard ASCII characters only (no unicode symbols like pi)
 2. Write clear comments explaining each step
 3. Use descriptive variable names
-4. Import all required modules at the top
+4. Always start with: from manim import *
 5. Create a Scene class that inherits from Scene
-6. Implement the construct method properly"""
+6. Implement the construct method properly
+7. Never use deprecated methods like ShowCreation"""
         
         formatted = f"""### System:
 {system_message}
@@ -209,6 +225,8 @@ from manim import *
         """
         Extract just the generated code from the full model output.
         """
+        import re
+        
         # Try to find the code after our prompt marker
         marker = "### Generated Manim Code:"
         
@@ -233,7 +251,31 @@ from manim import *
         if not code_part.strip().startswith("from manim import"):
             code_part = "from manim import *\n\n" + code_part
         
+        # Fix deprecated Manim API calls
+        code_part = self._fix_deprecated_manim_calls(code_part)
+        
         return code_part.strip()
+    
+    def _fix_deprecated_manim_calls(self, code):
+        import re
+        
+        # Dictionary of deprecated -> modern replacements
+        replacements = {
+            r'\bShowCreation\b': 'Create',
+            r'\bShowDestruction\b': 'Uncreate',
+            r'\bWiggleOutThenIn\b': 'Wiggle',
+        }
+        
+        for old_pattern, new_name in replacements.items():
+            code = re.sub(old_pattern, new_name, code)
+        
+        # Fix unicode characters in Text() calls
+        code = code.replace('Text("π', 'Text("pi')
+        code = code.replace("Text('π", "Text('pi")
+        code = code.replace('"\u03c0"', '"pi"')
+        code = code.replace("'\u03c0'", "'pi'")
+        
+        return code
     
     def get_status(self):
         """
