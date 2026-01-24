@@ -8,6 +8,10 @@ from tempfile import NamedTemporaryFile
 import torch
 import sys
 import logging
+import subprocess
+import re
+import tempfile
+import shutil
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -206,6 +210,141 @@ def generate_tts_audio(text):
         st.error(f"Text-to-speech error: {e}")
         return None
 
+
+def extract_class_name(code):
+    """
+    Extract the Scene class name from the generated Manim code.
+    Returns the first class that inherits from Scene.
+    """
+    # Look for class definitions that inherit from Scene
+    pattern = r'class\s+(\w+)\s*\(.*Scene.*\)'
+    matches = re.findall(pattern, code)
+    if matches:
+        return matches[0]
+    return None
+
+
+def compile_manim_video(code, quality="medium"):
+    """
+    Compile the Manim script and generate a video.
+    
+    Args:
+        code: The Manim Python code to compile
+        quality: Video quality - 'low' (480p), 'medium' (720p), 'high' (1080p)
+    
+    Returns:
+        tuple: (success: bool, video_path or error_message: str)
+    """
+    # Extract the class name from the code
+    class_name = extract_class_name(code)
+    if not class_name:
+        return False, "Could not find a Scene class in the generated code. Make sure the code contains a class that inherits from Scene."
+    
+    # Quality flags for Manim
+    quality_flags = {
+        "low": "-ql",      # 480p, 15fps
+        "medium": "-qm",   # 720p, 30fps  
+        "high": "-qh"      # 1080p, 60fps
+    }
+    quality_flag = quality_flags.get(quality, "-qm")
+    
+    # Create a temporary directory for the script and output
+    temp_dir = tempfile.mkdtemp(prefix="manim_")
+    script_path = os.path.join(temp_dir, "generated_scene.py")
+    
+    try:
+        # Write the code to a temporary file
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(code)
+        
+        logger.info(f"Saved script to: {script_path}")
+        logger.info(f"Compiling class: {class_name}")
+        
+        # Build the Manim command
+        # Using --media_dir to specify output location
+        cmd = [
+            "manim",
+            quality_flag,
+            script_path,
+            class_name,
+            "--media_dir", temp_dir
+        ]
+        
+        logger.info(f"Running command: {' '.join(cmd)}")
+        
+        # Run Manim
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+        
+        # Log output for debugging
+        if result.stdout:
+            logger.info(f"Manim stdout: {result.stdout}")
+        if result.stderr:
+            logger.warning(f"Manim stderr: {result.stderr}")
+        
+        # Check if compilation was successful
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error during compilation"
+            return False, f"Manim compilation failed:\n{error_msg}"
+        
+        # Find the output video file
+        # Manim outputs to: media_dir/videos/script_name/quality/class_name.mp4
+        video_dir = os.path.join(temp_dir, "videos", "generated_scene")
+        
+        # Search for the video file
+        video_path = None
+        for root, dirs, files in os.walk(video_dir):
+            for file in files:
+                if file.endswith(".mp4"):
+                    video_path = os.path.join(root, file)
+                    break
+            if video_path:
+                break
+        
+        if not video_path or not os.path.exists(video_path):
+            # Try alternative location (current media folder)
+            alt_video_dir = os.path.join(os.getcwd(), "media", "videos", "generated_scene")
+            for root, dirs, files in os.walk(alt_video_dir):
+                for file in files:
+                    if file.endswith(".mp4"):
+                        video_path = os.path.join(root, file)
+                        break
+                if video_path:
+                    break
+        
+        if not video_path or not os.path.exists(video_path):
+            return False, f"Video was compiled but output file not found. Check the logs for details.\nOutput: {result.stdout}"
+        
+        # Copy video to a persistent location
+        output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        final_video_path = os.path.join(output_dir, f"{class_name}.mp4")
+        shutil.copy2(video_path, final_video_path)
+        
+        logger.info(f"Video saved to: {final_video_path}")
+        
+        return True, final_video_path
+        
+    except subprocess.TimeoutExpired:
+        return False, "Manim compilation timed out (exceeded 5 minutes). Try simplifying the animation."
+    except FileNotFoundError:
+        return False, "Manim is not installed or not in PATH. Please install Manim: pip install manim"
+    except Exception as e:
+        logger.error(f"Error compiling Manim: {e}")
+        return False, f"Error during compilation: {str(e)}"
+    finally:
+        # Cleanup temp directory (but keep output if successful)
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+
 def generate_manim_code(prompt, model_choice):
     """
     Generate Manim code using the selected model.
@@ -288,6 +427,12 @@ if "tts_file_path" not in st.session_state:
     st.session_state.tts_file_path = None
 if "model_choice" not in st.session_state:
     st.session_state.model_choice = "CodeLlama-34B"  # Default to available model
+if "video_path" not in st.session_state:
+    st.session_state.video_path = None
+if "video_error" not in st.session_state:
+    st.session_state.video_error = None
+if "video_quality" not in st.session_state:
+    st.session_state.video_quality = "medium"
 
 # Main UI Layout
 
@@ -360,6 +505,18 @@ with st.sidebar:
     else:
         color = "#FF0000"
         st.markdown(f"<span style='color:{color};font-weight:bold'>Groq API - Not Available</span>", unsafe_allow_html=True)
+    
+    # Video Quality Settings
+    st.markdown("---")
+    st.subheader("Video Settings")
+    video_quality = st.selectbox(
+        "Video Quality",
+        ["low", "medium", "high"],
+        index=["low", "medium", "high"].index(st.session_state.video_quality),
+        help="low: 480p 15fps, medium: 720p 30fps, high: 1080p 60fps"
+    )
+    if video_quality != st.session_state.video_quality:
+        st.session_state.video_quality = video_quality
 
 # Main Content
 st.title("Math2Visual Studio")
@@ -397,7 +554,7 @@ with col_actions:
             st.session_state.speech_enabled = False
 
     # Generate code using the selected AI model
-    if st.button("⚡ Generate Code"):
+    if st.button(" Generate Code"):
         with st.spinner("Generating Manim script..."):
             code_result = generate_manim_code(user_input, model_choice)
             st.session_state.generated_code = code_result
@@ -412,16 +569,83 @@ st.markdown("---")
 if st.session_state.generated_code:
     st.subheader("Generated Manim Code")
     
-    # Code Display
-    st.code(st.session_state.generated_code, language="python")
+    # Code Display with editable option
+    edited_code = st.text_area(
+        "Edit code if needed:",
+        value=st.session_state.generated_code,
+        height=400,
+        key="code_editor"
+    )
+    
+    # Update session state if code was edited
+    if edited_code != st.session_state.generated_code:
+        st.session_state.generated_code = edited_code
+    
+    # Video Generation Section
+    st.markdown("---")
+    col_video_btn, col_video_info = st.columns([1, 2])
+    
+    with col_video_btn:
+        if st.button(" Generate Video", type="primary"):
+            with st.spinner(f"Compiling Manim animation ({st.session_state.video_quality} quality)..."):
+                # Reset previous video state
+                st.session_state.video_path = None
+                st.session_state.video_error = None
+                
+                # Compile the video
+                success, result = compile_manim_video(
+                    st.session_state.generated_code,
+                    quality=st.session_state.video_quality
+                )
+                
+                if success:
+                    st.session_state.video_path = result
+                    st.session_state.video_error = None
+                    # Generate success audio feedback
+                    success_msg = "Video generated successfully! You can now watch the animation below."
+                    st.session_state.tts_file_path = generate_tts_audio(success_msg)
+                else:
+                    st.session_state.video_error = result
+                    st.session_state.video_path = None
+            
+            st.rerun()
+    
+    with col_video_info:
+        st.info(f"Quality: {st.session_state.video_quality} | This may take a few moments depending on animation complexity.")
+    
+    # Display video error if any
+    if st.session_state.video_error:
+        st.error("Video Compilation Failed")
+        with st.expander("View Error Details", expanded=True):
+            st.code(st.session_state.video_error, language="text")
+    
+    # Display the rendered video
+    if st.session_state.video_path and os.path.exists(st.session_state.video_path):
+        st.markdown("---")
+        st.subheader(" Generated Animation")
+        
+        # Display the video
+        st.video(st.session_state.video_path)
+        
+        # Add download button for the video
+        with open(st.session_state.video_path, "rb") as video_file:
+            video_bytes = video_file.read()
+            st.download_button(
+                label=" Download Video",
+                data=video_bytes,
+                file_name=os.path.basename(st.session_state.video_path),
+                mime="video/mp4"
+            )
     
     # Audio Feedback Section
+    st.markdown("---")
     if st.session_state.tts_file_path:
-        st.subheader("Audio Feedback")
+        st.subheader(" Audio Feedback")
         st.audio(st.session_state.tts_file_path, format="audio/mp3")
         
-        # Option to read the code summary (simulated)
+        # Option to read the code summary
         if st.button(" Read Code Explanation"):
-            explanation_text = f"This code creates a scene specifically for {user_input[:50]}..."
+            explanation_text = f"This code creates a Manim animation for {user_input[:100]}. The animation has been compiled and is ready to view."
             explanation_audio = generate_tts_audio(explanation_text)
-            st.audio(explanation_audio, format="audio/mp3")
+            if explanation_audio:
+                st.audio(explanation_audio, format="audio/mp3")
