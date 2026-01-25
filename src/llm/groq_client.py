@@ -78,14 +78,51 @@ IMPORTANT - Use these CORRECT modern Manim methods (NOT deprecated ones):
 - Use self.add() to add without animation
 
 For math equations:
-- Use MathTex(r"...") for LaTeX math (use raw strings with r prefix)
-- Use Tex(r"...") for LaTeX text
-- Use Text("...") for plain text (no special characters)
-- Escape backslashes properly in LaTeX strings
+- Use MathTex(r"...") for ANY formula with math symbols (=, +, -, ×, fractions, greek letters, etc.)
+- Use Text("...") for plain text labels (no LaTeX, no special characters)
+- NEVER use Tex() for formulas - always use MathTex() for math
+- For multiplication use MathTex(r"a \\times b") NOT Tex()
+- Escape backslashes properly: \\times, \\frac, \\pi, \\sqrt
+
+CRITICAL LAYOUT RULES - ZERO OVERLAP ALLOWED:
+1. SEQUENCE IS CRITICAL - NEVER show new content while old content is still in center:
+   a) FIRST: Move old content away with self.play(old.animate.scale(0.25).to_corner(UL))
+   b) THEN: Show new content in center with self.play(Create(new)) or self.play(Write(new))
+   c) NEVER animate both in the same self.play() call
+
+2. POSITIONING OLD CONTENT (use these exact positions):
+   - 1st old item: to_corner(UL) with buff=0.3
+   - 2nd old item: move_to(LEFT*6)
+   - 3rd old item: to_corner(DL) with buff=0.3
+   - If more than 3 old items: FadeOut the oldest ones
+
+3. CENTER ZONE IS SACRED:
+   - New content appears at ORIGIN or with small shifts (UP*0.5, DOWN*0.5)
+   - Scale new content to 0.7 so it fits comfortably
+   - Nothing else should be in the center region (LEFT*3 to RIGHT*3, UP*2 to DOWN*2)
+
+4. CODE PATTERN FOR EACH STEP:
+   ```
+   # Step N: First move old content away
+   self.play(old_content.animate.scale(0.25).to_corner(UL))
+   
+   # Now center is clear - show new content
+   new_content = MathTex(r"...").scale(0.7)
+   self.play(Write(new_content))
+   self.wait(1)
+   ```
+
+5. GROUPING: Use VGroup() to move related items together as one unit
+
+6. TITLE: Keep title at top edge, scale 0.6, never move it
+
+7. TIMING: self.wait(1) after each major animation for narration
+
+8. TEXT LENGTH: Max 30 characters per line, use Text("Line1\nLine2") for longer
 
 Rules:
 1. Always start with: from manim import *
-2. Use standard ASCII characters only in Text() - no unicode symbols like pi, use words instead
+2. Use standard ASCII characters only in Text() - no unicode symbols like pi
 3. Create a class that inherits from Scene
 4. Implement the construct(self) method
 5. Include helpful comments explaining each step
@@ -93,6 +130,10 @@ Rules:
 7. Make code beginner-friendly and readable
 8. Ensure the code is complete and runnable
 9. For pi symbol in math, use MathTex(r"\\pi") not Text()
+10. Total animation should be 15-30 seconds with appropriate wait times
+11. NEVER use self.play(self.add(...)) - self.add() adds without animation, self.play() animates
+12. Use self.add(obj) for instant appearance, self.play(FadeIn(obj)) or self.play(Write(obj)) for animated appearance
+13. self.play() takes Animation objects like Create(), Write(), FadeIn(), Transform() - NOT self.add()
 
 Output only the Python code, no explanations or markdown."""
 

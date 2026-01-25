@@ -196,8 +196,35 @@ IMPORTANT - Use these CORRECT modern Manim methods:
 - Use self.wait() to pause
 
 For math equations:
-- Use MathTex(r"...") for LaTeX math (raw strings)
-- Use Text("...") for plain text (ASCII only)
+- Use MathTex(r"...") for ANY formula with math symbols (=, +, -, ×, fractions, greek letters)
+- Use Text("...") for plain text labels (no LaTeX, ASCII only)
+- NEVER use Tex() for formulas - always use MathTex()
+- For multiplication: MathTex(r"a \\times b")
+- Escape backslashes: \\times, \\frac, \\pi, \\sqrt
+
+CRITICAL LAYOUT RULES - ZERO OVERLAP ALLOWED:
+1. SEQUENCE IS CRITICAL - NEVER show new content while old is in center:
+   a) FIRST: Move old content away with self.play(old.animate.scale(0.25).to_corner(UL))
+   b) THEN: Show new content in center
+   c) NEVER animate both in same self.play()
+
+2. OLD CONTENT POSITIONS:
+   - 1st old: to_corner(UL) with buff=0.3
+   - 2nd old: move_to(LEFT*6)
+   - 3rd old: to_corner(DL) with buff=0.3
+   - More than 3: FadeOut oldest
+
+3. CENTER ZONE: New content at ORIGIN, scale 0.7
+
+4. PATTERN:
+   self.play(old.animate.scale(0.25).to_corner(UL))  # Move old away FIRST
+   new = MathTex(r"...").scale(0.7)  # Create new
+   self.play(Write(new))  # Show new in center
+   self.wait(1)
+
+5. Use VGroup() to move related items together
+6. Title at top edge, scale 0.6, never move
+7. Max 30 chars per line
 
 Rules:
 1. Use standard ASCII characters only (no unicode symbols like pi)
@@ -206,7 +233,12 @@ Rules:
 4. Always start with: from manim import *
 5. Create a Scene class that inherits from Scene
 6. Implement the construct method properly
-7. Never use deprecated methods like ShowCreation"""
+7. Never use deprecated methods like ShowCreation
+8. Total animation should be 15-30 seconds
+9. NEVER use self.play(self.add(...)) - this is invalid
+10. self.add(obj) = instant appearance (no animation)
+11. self.play(Write(obj)) or self.play(FadeIn(obj)) = animated appearance
+12. self.play() only takes Animation objects: Create(), Write(), FadeIn(), Transform(), etc."""
         
         formatted = f"""### System:
 {system_message}

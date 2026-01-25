@@ -107,14 +107,16 @@ def compile_video_api(code, quality):
         return False, f"Connection error: {str(e)}"
 
 
-def generate_teaching_script_api(description, code, model_choice):
+def generate_teaching_script_api(description, code, model_choice, video_duration=0.0):
+    """Call backend API to generate teaching script matched to video duration."""
     try:
         response = requests.post(
             f"{BACKEND_URL}/generate_teaching_script",
             json={
                 "animation_description": description,
                 "manim_code": code,
-                "model_choice": model_choice
+                "model_choice": model_choice,
+                "video_duration": video_duration
             },
             timeout=120
         )
@@ -132,6 +134,21 @@ def generate_teaching_script_api(description, code, model_choice):
         return False, "Request timed out."
     except requests.exceptions.RequestException as e:
         return False, f"Connection error: {str(e)}"
+
+
+def get_video_duration_api(video_path):
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/get_video_duration",
+            json={"video_path": video_path},
+            timeout=30
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("duration", 0.0)
+        return 0.0
+    except:
+        return 0.0
 
 
 def generate_tts_api(text):
@@ -415,24 +432,31 @@ if st.session_state.generated_code:
         
         with col_teach_btn:
             if st.button("Generate Teaching Script"):
-                with st.spinner("Creating explanation..."):
+                with st.spinner("Creating explanation matched to video..."):
+                    # Get video duration for script timing
+                    video_duration = get_video_duration_api(st.session_state.video_path)
+                    
                     success, result = generate_teaching_script_api(
                         user_input,
                         st.session_state.generated_code,
-                        st.session_state.model_choice
+                        st.session_state.model_choice,
+                        video_duration
                     )
                     
                     if success:
                         st.session_state.teaching_script = result
-                        # Generate audio
-                        st.session_state.teaching_audio_path = generate_tts_api(result)
                     else:
                         st.error(result)
                 
                 st.rerun()
         
         with col_teach_info:
-            st.info("The AI will explain the animation in simple words")
+            # Show video duration info
+            video_duration = get_video_duration_api(st.session_state.video_path)
+            if video_duration > 0:
+                st.info(f"Video duration: {video_duration:.1f}s - Script will be generated to match")
+            else:
+                st.info("The AI will explain the animation in simple words")
         
         # Display teaching script
         if st.session_state.teaching_script:
@@ -476,7 +500,7 @@ if st.session_state.generated_code:
                     st.rerun()
             
             with col_merge_info:
-                st.info("The video speed will be adjusted to match the narration length")
+                st.info("Video and audio will be perfectly synchronized")
             
             # Display final video error if any
             if st.session_state.final_video_error:

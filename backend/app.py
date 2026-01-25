@@ -110,6 +110,7 @@ class TeachingScriptRequest(BaseModel):
     animation_description: str
     manim_code: str
     model_choice: str = "CodeLlama-34B"
+    video_duration: float = 0.0  # Duration in seconds for script timing
 
 
 class TeachingScriptResponse(BaseModel):
@@ -376,34 +377,69 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
             pass
 
 
-def generate_teaching_script_text(description: str, code: str, model_choice: str) -> tuple:
+def generate_teaching_script_text(description: str, code: str, model_choice: str, video_duration: float = 0.0) -> tuple:
     if not description or not description.strip():
         return False, "Please provide a description first"
     
     if not code or not code.strip():
         return False, "Please generate the animation code first"
     
-    # Build the teaching prompt
-    teaching_prompt = f"""You are a friendly teacher explaining a math animation to young students and beginners.
+    # Calculate target word count based on video duration
+    # Average speaking rate is about 150 words per minute (2.5 words per second)
+    if video_duration > 0:
+        target_words = int(video_duration * 2.5)
+        duration_instruction = f"""
+CRITICAL TIMING REQUIREMENT:
+- The video is exactly {video_duration:.1f} seconds long
+- Your script must be approximately {target_words} words (speaking at normal pace)
+- This ensures the narration matches the video perfectly
+- Count your words carefully to match this target
+- Do not exceed {target_words + 20} words or go below {max(target_words - 20, 30)} words"""
+    else:
+        duration_instruction = ""
+    
+    # Build the teaching prompt - designed for perfect audio-video sync
+    teaching_prompt = f"""You are a math teacher giving a live lesson. The animation shows visuals while YOU TEACH the concept.
 
-The student asked to see: "{description}"
+Topic: "{description}"
 
-Here is the animation code that was created:
+Animation code (this shows WHEN things appear - sync your teaching to these moments):
 ```python
 {code}
 ```
+{duration_instruction}
 
-Please write a teaching script that:
-1. Uses very simple words that a 10-year-old can understand
-2. Explains what happens in the animation step by step
-3. Makes the math concept fun and interesting
-4. Uses examples from everyday life when possible
-5. Is encouraging and positive
-6. Has appropriate length for the animation
+TEACHING RULES:
+1. NO GREETING, NO SUMMARY - teach from first second to last
+2. DO NOT describe visuals ("we see a circle") - TEACH the concept ("a circle is a shape where every point is the same distance from the center")
+3. When a formula appears, EXPLAIN what it means, don't just read it
+4. When a shape appears, TEACH why it matters to the concept
+5. When something transforms, EXPLAIN the mathematical relationship
 
-Start with a friendly greeting and end with a summary.
-Do NOT include any code in your explanation - just explain the concepts simply.
-"""
+WHAT TO DO:
+- Circle appears → "A circle is defined by all points equidistant from a center point"
+- Formula A=πr² appears → "The area equals pi times the radius squared - pi is about 3.14"
+- Triangle transforms to rectangle → "Notice how we can rearrange these pieces - the area stays the same"
+
+WHAT NOT TO DO:
+- "We see a circle on the screen" 
+- "Now the formula appears" 
+- "The text says..." 
+- "Hello everyone" 
+- "So to summarize" 
+
+TIMING:
+- Follow the order of animations in the code
+- Pace your explanation to match self.wait() durations
+- ~2.5 words per second of video
+
+STYLE:
+- Talk like a passionate teacher in a classroom
+- Explain WHY, not just WHAT
+- Use analogies from everyday life
+- Simple words for beginners
+
+Write ONLY the teaching narration. No timestamps, no brackets, no stage directions."""
     
     # Use the selected model
     if model_choice == "Mistral-7B (Finetuned)":
@@ -466,8 +502,7 @@ def generate_tts_audio_file(text: str) -> Optional[str]:
         return None
 
 
-def get_media_duration(file_path: str) -> float:
-    """Get duration of a media file using ffprobe."""
+def get_media_duration(file_path: str) -> float:                                      
     try:
         cmd = [
             "ffprobe",
@@ -666,14 +701,29 @@ def get_video(filename: str): # Download a compiled video file.
     return FileResponse(video_path, media_type="video/mp4", filename=filename)
 
 
+class VideoDurationRequest(BaseModel):
+    video_path: str
+
+
+@app.post("/get_video_duration")
+def get_video_duration_endpoint(request: VideoDurationRequest):
+    """Get the duration of a video file in seconds."""
+    if not os.path.exists(request.video_path):
+        return {"duration": 0.0, "error": "Video file not found"}
+    
+    duration = get_media_duration(request.video_path)
+    return {"duration": duration}
+
+
 @app.post("/generate_teaching_script", response_model=TeachingScriptResponse)
 def generate_teaching_script_endpoint(request: TeachingScriptRequest):
-    logger.info(f"Teaching script request: model={request.model_choice}")
+    logger.info(f"Teaching script request: model={request.model_choice}, duration={request.video_duration}s")
     
     success, result = generate_teaching_script_text(
         request.animation_description,
         request.manim_code,
-        request.model_choice
+        request.model_choice,
+        request.video_duration
     )
     
     if success:
