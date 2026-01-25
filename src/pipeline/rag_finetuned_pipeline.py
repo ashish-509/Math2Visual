@@ -129,17 +129,40 @@ class RAGWithFinetunedModel:
         """
         Build the final prompt that combines user request with RAG context.
         """
+        layout_rules = """
+CRITICAL LAYOUT RULES TO PREVENT TEXT OVERLAP AND OVERFLOW:
+
+1. TEXT SIZING (MANDATORY):
+   - Title: .scale(0.6) at top with .to_edge(UP, buff=0.3)
+   - Main text: .scale(0.5) MAXIMUM
+   - Math equations: .scale(0.6) for main, .scale(0.4) for secondary
+   - Labels: .scale(0.4)
+
+2. LINE LENGTH: Max 40 characters per line. Use "\\n" for longer text.
+
+3. FRAME BOUNDARIES (safe zone):
+   - Horizontal: -6 to +6
+   - Vertical: -3.5 to +3.5
+   
+4. PREVENT OVERLAP: ALWAYS FadeOut previous content BEFORE showing new content.
+
+5. PATTERN:
+   self.play(FadeOut(old_content))  # Remove old first
+   new_content = Text("...").scale(0.5)  # Create scaled
+   self.play(Write(new_content))  # Show new
+"""
+        
         if not context:
             # No context available, just use the user prompt
             return f"""Create Manim code for the following request. Write clear, readable code.
-
+{layout_rules}
 Request: {user_prompt}"""
         
         # Build prompt with RAG context
         prompt = f"""Create Manim code for the following request.
 Use only standard keyboard characters. Write clear, readable code.
 Use the documentation below as reference for correct Manim syntax.
-
+{layout_rules}
 === MANIM DOCUMENTATION REFERENCE ===
 {context}
 === END DOCUMENTATION ===
