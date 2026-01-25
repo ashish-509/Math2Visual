@@ -202,29 +202,87 @@ For math equations:
 - For multiplication: MathTex(r"a \\times b")
 - Escape backslashes: \\times, \\frac, \\pi, \\sqrt
 
-CRITICAL LAYOUT RULES - ZERO OVERLAP ALLOWED:
-1. SEQUENCE IS CRITICAL - NEVER show new content while old is in center:
-   a) FIRST: Move old content away with self.play(old.animate.scale(0.25).to_corner(UL))
-   b) THEN: Show new content in center
-   c) NEVER animate both in same self.play()
+=== CRITICAL: TEXT AND LAYOUT RULES TO PREVENT OVERLAP/OVERFLOW ===
 
-2. OLD CONTENT POSITIONS:
-   - 1st old: to_corner(UL) with buff=0.3
-   - 2nd old: move_to(LEFT*6)
-   - 3rd old: to_corner(DL) with buff=0.3
-   - More than 3: FadeOut oldest
+**FRAME BOUNDARIES - NOTHING OUTSIDE THESE LIMITS:**
+- Horizontal: LEFT edge is -7, RIGHT edge is +7 (safe zone: -6 to +6)
+- Vertical: TOP edge is +4, BOTTOM edge is -4 (safe zone: -3.5 to +3.5)
+- ALWAYS check positions stay within safe zone
 
-3. CENTER ZONE: New content at ORIGIN, scale 0.7
+**TEXT SIZING - MANDATORY SCALING:**
+- Title text: .scale(0.6) and position at TOP with .to_edge(UP, buff=0.3)
+- Main explanation text: .scale(0.5) MAXIMUM - smaller for longer text
+- Math equations (MathTex): .scale(0.6) for main, .scale(0.4) for secondary
+- Labels and small text: .scale(0.4)
+- NEVER use scale > 0.7 for any text element
 
-4. PATTERN:
-   self.play(old.animate.scale(0.25).to_corner(UL))  # Move old away FIRST
-   new = MathTex(r"...").scale(0.7)  # Create new
-   self.play(Write(new))  # Show new in center
-   self.wait(1)
+**LINE LENGTH LIMITS - MUST FOLLOW:**
+- Maximum 40 characters per line for Text()
+- For longer text, SPLIT into multiple lines using "\n"
+- Example: Text("This is the first line\nThis is the second line").scale(0.5)
+- For very long explanations, use multiple separate Text objects stacked vertically
 
-5. Use VGroup() to move related items together
-6. Title at top edge, scale 0.6, never move
-7. Max 30 chars per line
+**MULTI-LINE TEXT PATTERN:**
+text = Text("Line 1 here\nLine 2 here\nLine 3 here", line_spacing=0.8).scale(0.5)
+text.move_to(ORIGIN)  # or specific position
+
+**PREVENTING OVERLAP - STRICT SEQUENCE:**
+1. ALWAYS FadeOut or move away previous content BEFORE showing new content
+2. NEVER have more than 2-3 objects visible at once unless they are small and positioned apart
+3. Use these positions for multiple elements:
+   - Title: .to_edge(UP, buff=0.3)
+   - Main content: ORIGIN or .move_to(UP*0.5)
+   - Secondary content: .move_to(DOWN*1.5)
+   - Old content (if keeping): .scale(0.3).to_corner(UL, buff=0.2)
+
+**CORRECT PATTERN FOR SEQUENTIAL CONTENT:**
+```python
+# Show first concept
+concept1 = Text("First explanation here").scale(0.5)
+self.play(Write(concept1))
+self.wait(2)
+
+# MUST fade out before showing next
+self.play(FadeOut(concept1))
+
+# Now show second concept
+concept2 = Text("Second explanation").scale(0.5)
+self.play(Write(concept2))
+self.wait(2)
+```
+
+**FOR STEP-BY-STEP EXPLANATIONS:**
+```python
+# Keep title fixed at top
+title = Text("Topic Title").scale(0.6).to_edge(UP, buff=0.3)
+self.play(Write(title))
+
+# Show step 1
+step1 = Text("Step 1: Do this").scale(0.5).move_to(ORIGIN)
+self.play(Write(step1))
+self.wait(2)
+
+# Move step1 aside, show step 2
+self.play(step1.animate.scale(0.5).to_corner(UL, buff=0.2))
+step2 = Text("Step 2: Then this").scale(0.5).move_to(ORIGIN)
+self.play(Write(step2))
+self.wait(2)
+```
+
+**GROUPING RELATED ITEMS:**
+- Use VGroup() to group related items
+- Scale the entire group: VGroup(item1, item2).scale(0.5)
+- Arrange vertically: group.arrange(DOWN, buff=0.3)
+- Check group fits in frame before displaying
+
+**EQUATIONS WITH EXPLANATIONS:**
+```python
+# Equation and label together, properly sized
+eq = MathTex(r"E = mc^2").scale(0.6)
+label = Text("Energy-mass equivalence").scale(0.4).next_to(eq, DOWN, buff=0.3)
+group = VGroup(eq, label).move_to(ORIGIN)
+self.play(Write(group))
+```
 
 Rules:
 1. Use standard ASCII characters only (no unicode symbols like pi)
@@ -238,7 +296,10 @@ Rules:
 9. NEVER use self.play(self.add(...)) - this is invalid
 10. self.add(obj) = instant appearance (no animation)
 11. self.play(Write(obj)) or self.play(FadeIn(obj)) = animated appearance
-12. self.play() only takes Animation objects: Create(), Write(), FadeIn(), Transform(), etc."""
+12. self.play() only takes Animation objects: Create(), Write(), FadeIn(), Transform(), etc.
+13. ALWAYS scale text with .scale(0.5) or smaller to prevent overflow
+14. ALWAYS fade out previous content before showing new content to prevent overlap
+15. Keep all elements within the safe frame zone (-6 to +6 horizontal, -3.5 to +3.5 vertical)"""
         
         formatted = f"""### System:
 {system_message}
