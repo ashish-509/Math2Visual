@@ -252,6 +252,15 @@ def generate_code_with_model(prompt: str, model_choice: str) -> tuple:
             if rag and rag.is_indexed:
                 context = rag.retrieve_context(prompt)
             
+            # Layout rules to prevent text overlap and overflow
+            layout_rules = """
+CRITICAL LAYOUT RULES - MUST FOLLOW:
+1. TEXT SIZING: Title .scale(0.6), main text .scale(0.5), equations .scale(0.6), labels .scale(0.4)
+2. LINE LENGTH: Max 40 chars per line. Use "\\n" for longer text.
+3. FRAME SAFE ZONE: -6 to +6 horizontal, -3.5 to +3.5 vertical
+4. PREVENT OVERLAP: ALWAYS FadeOut previous content BEFORE showing new content
+5. PATTERN: FadeOut old -> Create new scaled -> Write/FadeIn new"""
+            
             # Build augmented prompt with RAG context
             if context:
                 augmented_prompt = f"""Use the following Manim documentation as reference:
@@ -259,12 +268,15 @@ def generate_code_with_model(prompt: str, model_choice: str) -> tuple:
 === MANIM DOCUMENTATION ===
 {context}
 === END DOCUMENTATION ===
+{layout_rules}
 
 User Request: {prompt}
 
 Generate complete, working Manim code based on the documentation above."""
             else:
-                augmented_prompt = prompt
+                augmented_prompt = f"""{layout_rules}
+
+User Request: {prompt}"""
             
             # Get Groq client
             model_type = "codellama" if model_choice == "CodeLlama-34B" else "phi2"
