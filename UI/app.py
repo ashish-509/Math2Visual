@@ -351,59 +351,49 @@ with st.sidebar:
     # Update session state
     st.session_state.current_page = "Studio" if "Studio" in current_page else "Chatbot"
     
-    st.markdown("---")
-    
-    # Backend Status
-    st.header(" Settings")
-    health = check_backend_health()
-    
-    if health:
-        st.success("Backend: Connected")
-    else:
-        st.error("Backend: Not Connected")
-        st.warning("Start backend with: python backend/app.py")
-    
-    model_options = get_available_models()
-    if not model_options:
-        model_options = ["CodeLlama-34B", "Phi-2"]
-    
-    # Make sure current selection is valid
-    if st.session_state.model_choice not in model_options:
-        st.session_state.model_choice = model_options[0] if model_options else "CodeLlama-34B"
-    
-    model_choice = st.selectbox(
-        "Choose AI Model",
-        model_options,
-        index=model_options.index(st.session_state.model_choice) if st.session_state.model_choice in model_options else 0
-    )
-    
-    if model_choice != st.session_state.model_choice:
-        st.session_state.model_choice = model_choice
-    
-    # Video Quality Settings
-    st.markdown("---")
-    
-    video_quality = st.selectbox(
-        "Video Quality",
-        ["low", "medium", "high"],
-        index=["low", "medium", "high"].index(st.session_state.video_quality),
-        help="low: 480p 15fps, medium: 720p 30fps, high: 1080p 60fps"
-    )
-    
-    if video_quality != st.session_state.video_quality:
-        st.session_state.video_quality = video_quality
-    
-    # Chatbot status (only show when on chatbot page)
-    if st.session_state.current_page == "Chatbot":
+    # Only show settings for Studio page
+    if st.session_state.current_page == "Studio":
         st.markdown("---")
-        chatbot_status = check_chatbot_status()
-        if chatbot_status.get("ready"):
-            st.success(" Chatbot Ready")
-        elif chatbot_status.get("available"):
-            st.warning(" Chatbot Loading...")
+        
+        # Backend Status
+        st.header("Settings")
+        health = check_backend_health()
+        
+        if health:
+            st.success("Backend: Connected")
         else:
-            st.info(" Chatbot Offline")
-
+            st.error("Backend: Not Connected")
+            st.warning("Start backend with: python backend/app.py")
+        
+        model_options = get_available_models()
+        if not model_options:
+            model_options = ["CodeLlama-34B", "Phi-2"]
+        
+        # Make sure current selection is valid
+        if st.session_state.model_choice not in model_options:
+            st.session_state.model_choice = model_options[0] if model_options else "CodeLlama-34B"
+        
+        model_choice = st.selectbox(
+            "Choose AI Model",
+            model_options,
+            index=model_options.index(st.session_state.model_choice) if st.session_state.model_choice in model_options else 0
+        )
+        
+        if model_choice != st.session_state.model_choice:
+            st.session_state.model_choice = model_choice
+        
+        # Video Quality Settings
+        st.markdown("---")
+        
+        video_quality = st.selectbox(
+            "Video Quality",
+            ["low", "medium", "high"],
+            index=["low", "medium", "high"].index(st.session_state.video_quality),
+            help="low: 480p 15fps, medium: 720p 30fps, high: 1080p 60fps"
+        )
+        
+        if video_quality != st.session_state.video_quality:
+            st.session_state.video_quality = video_quality
 
 
 # Main Content
@@ -414,6 +404,9 @@ st.title("Math2Visual Studio")
 # STUDIO PAGE
 
 if st.session_state.current_page == "Studio":
+    
+    # Get health status for studio
+    health = check_backend_health()
     
     # Input Section
     col_input, col_actions = st.columns([3, 1])
@@ -667,13 +660,110 @@ if st.session_state.current_page == "Studio":
 # CHATBOT PAGE - Manim Syntax Assistant
 
 elif st.session_state.current_page == "Chatbot":
-    
-    # Minimal styling
+
     st.markdown("""
     <style>
     .small-font { font-size: 0.85em; color: #888; }
     </style>
     """, unsafe_allow_html=True)
+    
+    # Initialize chat input state
+    if "chat_input_value" not in st.session_state:
+        st.session_state.chat_input_value = ""
+    
+    # Helper function to format response 
+    def format_response(content: str) -> None:
+        """Render response with proper separation of text and code."""
+        import re
+        
+        # Pattern for code blocks with ```python or ```
+        code_pattern = r'```(?:python)?\s*\n?(.*?)```'
+        
+        if '```' in content:
+            # Has proper code blocks - use them
+            parts = re.split(code_pattern, content, flags=re.DOTALL)
+            
+            for i, part in enumerate(parts):
+                part = part.strip()
+                if not part:
+                    continue
+                if i % 2 == 1:
+                    # This is code (odd index = captured group)
+                    st.code(part, language="python")
+                else:
+                    # This is text - render as markdown
+                    st.markdown(part)
+        else:
+            # No code blocks - check if there's actual code mixed in
+            # Only detect REAL code patterns, not just any mention of manim
+            code_start_patterns = [
+                r'^from manim import',
+                r'^import manim',
+                r'^class \w+\(.*Scene.*\):',
+            ]
+            
+            has_real_code = any(re.search(p, content, re.MULTILINE) for p in code_start_patterns)
+            
+            if has_real_code:
+                _render_mixed_content(content)
+            else:
+                # Just text explanation - render as markdown
+                st.markdown(content)
+    
+    def _render_mixed_content(content: str) -> None:
+        """Handle content that mixes text and code without proper fencing."""
+        lines = content.split('\n')
+        buffer = []
+        mode = 'text'
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            # Very specific code detection - must be actual Python code structure
+            is_code_start = (
+                line.startswith('from manim import') or
+                line.startswith('import manim') or
+                stripped.startswith('class ') and '(Scene)' in line or
+                stripped.startswith('class ') and 'Scene' in line and ':' in line
+            )
+            
+            is_code_continuation = (
+                mode == 'code' and (
+                    line.startswith('    ') or 
+                    line.startswith('\t') or
+                    stripped == '' or
+                    stripped.startswith('def ') or
+                    stripped.startswith('self.') or
+                    stripped.startswith('#') or
+                    stripped.startswith('return') or
+                    '=' in stripped and not stripped.endswith(':')
+                )
+            )
+            
+            if is_code_start:
+                # Flush text buffer first
+                if buffer and mode == 'text':
+                    st.markdown('\n'.join(buffer))
+                    buffer = []
+                mode = 'code'
+                buffer.append(line)
+            elif is_code_continuation:
+                buffer.append(line)
+            else:
+                # This is text
+                if mode == 'code' and buffer:
+                    # Flush code buffer
+                    st.code('\n'.join(buffer), language="python")
+                    buffer = []
+                mode = 'text'
+                buffer.append(line)
+        
+        # Flush remaining buffer
+        if buffer:
+            if mode == 'code':
+                st.code('\n'.join(buffer), language="python")
+            else:
+                st.markdown('\n'.join(buffer))
     
     # Display chat history first (main focus)
     if st.session_state.chatbot_history:
@@ -682,7 +772,10 @@ elif st.session_state.current_page == "Chatbot":
         
         for msg in history_to_show:
             with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+                if msg["role"] == "assistant":
+                    format_response(msg["content"])
+                else:
+                    st.markdown(msg["content"])
         
         # Clear button - small and subtle
         if st.button("Clear", key="clear_chat", type="secondary"):
@@ -691,19 +784,20 @@ elif st.session_state.current_page == "Chatbot":
     
     st.markdown("---")
     
-    # Chat input - compact layout with button on the right
-    col_input, col_btn = st.columns([5, 1])
-    
-    with col_input:
-        chat_question = st.text_input(
-            "Ask about Manim:",
-            placeholder="e.g., How to create a circle?",
-            key="chat_input",
-            label_visibility="collapsed"
-        )
-    
-    with col_btn:
-        ask_btn = st.button("Ask", key="ask_chatbot_btn", type="primary", use_container_width=True)
+    # Chat input using form to clear after submit (no page refresh)
+    with st.form(key="chat_form", clear_on_submit=True):
+        col_input, col_btn = st.columns([5, 1])
+        
+        with col_input:
+            chat_question = st.text_input(
+                "Ask about Manim:",
+                placeholder="e.g., How to create a circle?",
+                key="chat_input",
+                label_visibility="collapsed"
+            )
+        
+        with col_btn:
+            ask_btn = st.form_submit_button("Ask", type="primary", use_container_width=True)
     
     # Options row - minimal
     include_examples = st.checkbox("Include code examples", value=True, key="include_examples")
