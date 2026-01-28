@@ -63,6 +63,14 @@ except ImportError as e:
     RAG_AVAILABLE = False
     logger.warning(f"RAG pipeline not available: {e}")
 
+# Manim Syntax Chatbot
+try:
+    from src.chatbot.manim_chatbot import get_manim_chatbot
+    CHATBOT_AVAILABLE = True
+except ImportError as e:
+    CHATBOT_AVAILABLE = False
+    logger.warning(f"Manim chatbot not available: {e}")
+
 
 # Create FastAPI app
 
@@ -145,12 +153,48 @@ class HealthResponse(BaseModel):
     models: dict
 
 
+# Chatbot Request/Response Models
+class ChatbotRequest(BaseModel):
+    question: str
+    include_examples: bool = False
+
+
+class ChatbotResponse(BaseModel):
+    success: bool
+    answer: str
+    sources: str = ""
+    cached: bool = False
+    message: str = ""
+
+
 # Cached Resources (singleton pattern)
 
 # Cache for pipeline instances
 _rag_pipeline_cache = None
 _rag_finetuned_cache = None
 _groq_clients_cache = {}
+_chatbot_cache = None
+
+
+def get_chatbot_cached():
+    """Get or create the Manim syntax chatbot (singleton)."""
+    global _chatbot_cache
+    
+    if _chatbot_cache is not None:
+        return _chatbot_cache
+    
+    if not CHATBOT_AVAILABLE:
+        return None
+    
+    try:
+        chatbot = get_manim_chatbot()
+        if chatbot.is_ready:
+            _chatbot_cache = chatbot
+            return _chatbot_cache
+        return None
+    except Exception as e:
+        logger.error(f"Failed to create chatbot: {e}")
+        return None
 
 
 def get_rag_pipeline_cached():
@@ -783,6 +827,114 @@ def merge_video_audio_endpoint(request: MergeVideoAudioRequest):
             success=False,
             message=result
         )
+
+
+# CHATBOT ENDPOINTS - Manim Syntax Assistant
+
+@app.post("/chatbot/ask", response_model=ChatbotResponse)
+def chatbot_ask(request: ChatbotRequest):
+  
+    logger.info(f"Chatbot question: {request.question[:50]}...")
+    
+    # Check if chatbot is available
+    if not CHATBOT_AVAILABLE:
+        return ChatbotResponse(
+            success=False,
+            answer="Chatbot service is not available. Please check server logs.",
+            message="CHATBOT_AVAILABLE is False"
+        )
+    
+    try:
+        # Get the chatbot instance
+        chatbot = get_chatbot_cached()
+        
+        if chatbot is None:
+            return ChatbotResponse(
+                success=False,
+                answer="Could not initialize the chatbot. Please try again later.",
+                message="Chatbot initialization failed"
+            )
+        
+        # Ask the question
+        if request.include_examples:
+            response = chatbot.ask_with_examples(request.question)
+        else:
+            response = chatbot.ask(request.question)
+        
+        return ChatbotResponse(
+            success=not response.get("error", False),
+            answer=response.get("answer", "No response generated"),
+            sources=response.get("sources", ""),
+            cached=response.get("cached", False),
+            message="Success" if not response.get("error") else "Error occurred"
+        )
+        
+    except Exception as e:
+        logger.error(f"Chatbot error: {e}")
+        return ChatbotResponse(
+            success=False,
+            answer=f"An error occurred: {str(e)}",
+            message=str(e)
+        )
+
+
+@app.get("/chatbot/syntax/{class_name}")
+def chatbot_get_syntax(class_name: str):
+ 
+    logger.info(f"Syntax lookup: {class_name}")
+    
+    if not CHATBOT_AVAILABLE:
+        return ChatbotResponse(
+            success=False,
+            answer="Chatbot service is not available.",
+            message="CHATBOT_AVAILABLE is False"
+        )
+    
+    try:
+        chatbot = get_chatbot_cached()
+        
+        if chatbot is None:
+            return ChatbotResponse(
+                success=False,
+                answer="Could not initialize the chatbot.",
+                message="Chatbot initialization failed"
+            )
+        
+        response = chatbot.get_syntax(class_name)
+        
+        return ChatbotResponse(
+            success=not response.get("error", False),
+            answer=response.get("answer", "No information found"),
+            sources=response.get("sources", ""),
+            cached=response.get("cached", False)
+        )
+        
+    except Exception as e:
+        logger.error(f"Syntax lookup error: {e}")
+        return ChatbotResponse(
+            success=False,
+            answer=f"Error looking up {class_name}: {str(e)}",
+            message=str(e)
+        )
+
+
+@app.get("/chatbot/status")
+def chatbot_status():
+    
+    if not CHATBOT_AVAILABLE:
+        return {
+            "available": False,
+            "ready": False,
+            "message": "Chatbot module not imported"
+        }
+    
+    chatbot = get_chatbot_cached()
+    
+    return {
+        "available": True,
+        "ready": chatbot is not None and chatbot.is_ready,
+        "message": "Chatbot ready" if chatbot and chatbot.is_ready else "Chatbot not initialized"
+    }
 
 
 @app.get("/available_models")
