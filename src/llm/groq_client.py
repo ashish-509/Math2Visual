@@ -178,6 +178,54 @@ Rules:
 7. Make code beginner-friendly and readable
 8. Ensure the code is complete and runnable
 9. For pi symbol in math, use MathTex(r"\\pi") not Text()
+
+=== CRITICAL: PLOTTING MATHEMATICAL FUNCTIONS ===
+
+**NEVER use Graph() for mathematical function plots!**
+Graph() in Manim is ONLY for network graphs (nodes and edges), NOT for plotting y=f(x).
+
+**CORRECT way to plot mathematical functions:**
+```python
+# Create coordinate axes
+axes = Axes(
+    x_range=[-4, 4, 1],  # [min, max, step]
+    y_range=[-5, 5, 1],
+    x_length=6,
+    y_length=4,
+    axis_config={"include_numbers": True, "font_size": 24}
+).scale(0.8)
+
+# Plot a function using axes.plot()
+graph = axes.plot(lambda x: x**3 - 6*x**2 + 9*x + 2, color=BLUE)
+
+# Add labels
+graph_label = axes.get_graph_label(graph, label="f(x)", x_val=2, direction=UP)
+
+# Show them
+self.play(Create(axes))
+self.play(Create(graph), Write(graph_label))
+```
+
+**For marking points on the graph (like local minima/maxima):**
+```python
+# Get the point coordinates
+x_val = 1  # x-coordinate of the point
+y_val = func(x_val)  # calculate y
+
+# Create a dot at that point
+point = Dot(axes.c2p(x_val, y_val), color=RED)  # c2p = coords to point
+
+# Add label
+label = MathTex(f"({x_val}, {y_val})").scale(0.4).next_to(point, UR, buff=0.1)
+
+self.play(Create(point), Write(label))
+```
+
+**WRONG (will cause errors):**
+```python
+# DO NOT DO THIS:
+graph = Graph(x_min=-4, x_max=4, ...)  # WRONG! Graph is for networks!
+```
 10. Total animation should be 15-30 seconds with appropriate wait times
 11. NEVER use self.play(self.add(...)) - self.add() adds without animation, self.play() animates
 12. Use self.add(obj) for instant appearance, self.play(FadeIn(obj)) or self.play(Write(obj)) for animated appearance
@@ -185,6 +233,8 @@ Rules:
 14. ALWAYS scale text with .scale(0.5) or smaller to prevent overflow
 15. ALWAYS fade out previous content before showing new content to prevent overlap
 16. Keep all elements within the safe frame zone (-6 to +6 horizontal, -3.5 to +3.5 vertical)
+17. NEVER use Graph() for plotting functions - use Axes with .plot() instead
+18. Graph() is ONLY for network graphs (nodes/edges), NOT for y=f(x) plots
 
 Output only the Python code, no explanations or markdown."""
 
@@ -199,11 +249,11 @@ Output only the Python code, no explanations or markdown."""
                     },
                     {
                         "role": "user",
-                        "content": f"Generate Manim code for:\n{prompt}"
+                        "content": f"Generate complete Manim code for:\n{prompt}\n\nIMPORTANT: Generate the COMPLETE code, do not truncate or cut off early."
                     }
                 ],
                 model=self.model,
-                max_tokens=max_tokens,
+                max_tokens=4096, 
                 temperature=temperature,
                 top_p=0.9
             )
@@ -337,10 +387,17 @@ Output only the Python code, no explanations or markdown."""
             code
         )
         
+        # Graph() is for network graphs, not mathematical function plots
+        if re.search(r'Graph\s*\(\s*x_min|Graph\s*\(\s*x_range|Graph\s*\(\s*y_min', code):
+            logger.warning("Detected incorrect Graph() usage for function plotting. This cannot be auto-fixed - Graph() is for network graphs only.")
+            # Add a comment warning about this
+            if 'Graph(' in code:
+                code = "# WARNING: This code uses Graph() incorrectly. Graph() is for network graphs only.\n# For plotting mathematical functions, use Axes with .plot() method.\n# Example:\n# axes = Axes(x_range=[-4, 4, 1], y_range=[-5, 5, 1])\n# graph = axes.plot(lambda x: x**2, color=BLUE)\n\n" + code
+        
         # Fix Write() used on shapes (should be Create())
         shape_classes = ['Circle', 'Square', 'Rectangle', 'Triangle', 'Line', 'Arrow', 
                         'Dot', 'Ellipse', 'Arc', 'Polygon', 'RegularPolygon', 'Star',
-                        'Annulus', 'Sector', 'AnnularSector']
+                        'Annulus', 'Sector', 'AnnularSector', 'Axes', 'NumberPlane']
         for shape in shape_classes:
             # Fix Write(Circle(...)) -> Create(Circle(...))
             pattern = rf'Write\s*\(\s*({shape}\s*\([^)]*\))'

@@ -455,17 +455,35 @@ if st.session_state.current_page == "Studio":
     if st.session_state.generated_code:
         st.subheader("Generated Manim Code")
         
-        # Editable code display
-        edited_code = st.text_area(
-            "Edit code if needed:",
-            value=st.session_state.generated_code,
-            height=400,
-            key="code_editor"
-        )
+        # Display syntax-highlighted code with copy functionality
+        st.code(st.session_state.generated_code, language="python", line_numbers=True)
         
-        # Update session state if code was edited
-        if edited_code != st.session_state.generated_code:
-            st.session_state.generated_code = edited_code
+        # Copy/Download buttons row
+        col_copy, col_edit_toggle = st.columns([1, 3])
+        
+        with col_copy:
+            # Download as .py file (also works as copy - user can open and copy)
+            st.download_button(
+                label="Download Code",
+                data=st.session_state.generated_code,
+                file_name="generated_manim_code.py",
+                mime="text/x-python",
+                help="Download the code as a .py file"
+            )
+        
+        # Expandable section for editing
+        with st.expander("Edit Code", expanded=False):
+            edited_code = st.text_area(
+                "Modify the code below:",
+                value=st.session_state.generated_code,
+                height=400,
+                key="code_editor"
+            )
+            
+            # Update session state if code was edited
+            if edited_code != st.session_state.generated_code:
+                st.session_state.generated_code = edited_code
+                st.rerun()
         
         # Video Generation Section
         st.markdown("---")

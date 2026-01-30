@@ -299,6 +299,20 @@ def validate_and_fix_manim_code(code: str) -> Tuple[bool, str, str]:
         code = re.sub(r'self\.play\s*\(\s*self\.add\s*\(', 'self.play(FadeIn(', code)
         errors_fixed.append("Fixed self.play(self.add()) -> self.play(FadeIn())")
     
+    # Step 4b: Check for incorrect Graph() usage (Graph is for network graphs, not function plots)
+    if re.search(r'Graph\s*\(\s*(x_min|x_range|y_min|y_range|x_max|y_max)', code):
+        return False, original_code, """ERROR: Incorrect use of Graph() detected.
+
+Graph() in Manim is for NETWORK GRAPHS (nodes and edges), NOT for plotting mathematical functions.
+
+To plot mathematical functions like y = f(x), use Axes with .plot():
+
+    axes = Axes(x_range=[-4, 4, 1], y_range=[-5, 5, 1], x_length=6, y_length=4)
+    graph = axes.plot(lambda x: x**3 - 6*x**2 + 9*x + 2, color=BLUE)
+    self.play(Create(axes), Create(graph))
+
+Please regenerate the code with the correct approach."""
+
     # Step 5: Fix common syntax issues
     lines = code.split('\n')
     fixed_lines = []
@@ -702,8 +716,14 @@ def generate_tts_audio_file(text: str) -> Optional[str]:
     if not text or not text.strip():
         return None
     
+    # Clean the text - remove any code, warnings, or technical content that shouldn't be read
+    cleaned_text = clean_text_for_tts(text)
+    
+    if not cleaned_text or not cleaned_text.strip():
+        return None
+    
     try:
-        tts = gTTS(text=text, lang="en", slow=False)
+        tts = gTTS(text=cleaned_text, lang="en", slow=False)
         
         # Save to outputs directory
         output_dir = os.path.join(PROJECT_ROOT, "outputs")
