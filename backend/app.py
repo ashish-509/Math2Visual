@@ -11,11 +11,12 @@ The Streamlit frontend calls these endpoints via HTTP.
 import os
 import sys
 import re
+import ast
 import logging
 import tempfile
 import shutil
 import subprocess
-from typing import Optional
+from typing import Optional, Tuple
 from tempfile import NamedTemporaryFile
 
 from fastapi import FastAPI, HTTPException
@@ -262,6 +263,148 @@ def extract_class_name(code: str) -> Optional[str]:
     return None
 
 
+def validate_and_fix_manim_code(code: str) -> Tuple[bool, str, str]:
+    """
+    Comprehensive validation and fixing of Manim code before compilation.
+    Returns: (is_valid, fixed_code, error_message)
+    """
+    if not code or not code.strip():
+        return False, code, "Empty code provided"
+    
+    original_code = code
+    errors_fixed = []
+    
+    # Step 1: Basic cleanup
+    code = code.strip()
+    
+    # Step 2: Ensure proper imports
+    if 'from manim import' not in code and 'import manim' not in code:
+        code = "from manim import *\n\n" + code
+        errors_fixed.append("Added missing manim import")
+    
+    # Step 3: Fix deprecated Manim calls
+    deprecated_replacements = {
+        r'\bShowCreation\b': 'Create',
+        r'\bShowDestruction\b': 'Uncreate',
+        r'\bWiggleOutThenIn\b': 'Wiggle',
+        r'\bDrawBorderThenFill\b': 'DrawBorderThenFill',
+    }
+    for old, new in deprecated_replacements.items():
+        if re.search(old, code):
+            code = re.sub(old, new, code)
+            errors_fixed.append(f"Replaced deprecated {old} with {new}")
+    
+    # Step 4: Fix self.play(self.add(...)) error
+    if 'self.play(self.add(' in code or re.search(r'self\.play\s*\(\s*self\.add\s*\(', code):
+        code = re.sub(r'self\.play\s*\(\s*self\.add\s*\(', 'self.play(FadeIn(', code)
+        errors_fixed.append("Fixed self.play(self.add()) -> self.play(FadeIn())")
+    
+    # Step 5: Fix common syntax issues
+    lines = code.split('\n')
+    fixed_lines = []
+    
+    for i, line in enumerate(lines):
+        # Fix typos
+        line = line.replace('slef.', 'self.')
+        line = line.replace('sefl.', 'self.')
+        line = line.replace('sel.', 'self.')
+        
+        # Fix unclosed parentheses in single lines
+        if 'self.play(' in line or 'self.add(' in line:
+            open_count = line.count('(')
+            close_count = line.count(')')
+            if open_count > close_count:
+                line = line.rstrip() + ')' * (open_count - close_count)
+                errors_fixed.append(f"Fixed unclosed parentheses on line {i+1}")
+        
+        # Fix missing colons
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#'):
+            if re.match(r'^class\s+\w+.*\)\s*$', stripped) and not stripped.endswith(':'):
+                line = line.rstrip() + ':'
+                errors_fixed.append("Added missing colon to class definition")
+            elif re.match(r'^def\s+\w+.*\)\s*$', stripped) and not stripped.endswith(':'):
+                line = line.rstrip() + ':'
+                errors_fixed.append("Added missing colon to function definition")
+        
+        fixed_lines.append(line)
+    
+    code = '\n'.join(fixed_lines)
+    
+    # Step 6: Ensure Scene class exists
+    if not re.search(r'class\s+\w+\s*\(.*Scene.*\)\s*:', code):
+        # Try to find class without Scene inheritance
+        match = re.search(r'class\s+(\w+)\s*\([^)]*\)\s*:', code)
+        if match:
+            class_name = match.group(1)
+            code = re.sub(
+                rf'class\s+{class_name}\s*\([^)]*\)\s*:',
+                f'class {class_name}(Scene):',
+                code
+            )
+            errors_fixed.append(f"Made {class_name} inherit from Scene")
+        else:
+            # Check if there's animation code without a class
+            if 'self.play' in code or 'self.add' in code:
+                return False, original_code, "Animation code found outside of a Scene class. Please wrap your code in a class that inherits from Scene."
+    
+    # Step 7: Ensure construct method exists
+    if re.search(r'class\s+\w+\s*\(.*Scene.*\)\s*:', code):
+        if 'def construct(self)' not in code:
+            match = re.search(r'(class\s+\w+\s*\(.*Scene.*\)\s*:)', code)
+            if match:
+                class_def = match.group(1)
+                parts = code.split(class_def)
+                if len(parts) == 2:
+                    after_class = parts[1]
+                    if 'def construct' not in after_class and 'def ' not in after_class[:50]:
+                        code = parts[0] + class_def + "\n    def construct(self):" + after_class
+                        errors_fixed.append("Added missing construct method")
+    
+    # Step 8: Validate Python syntax
+    try:
+        ast.parse(code)
+    except SyntaxError as e:
+        logger.warning(f"Syntax error in code: {e}")
+        error_msg = str(e)
+        
+        # Fix unexpected EOF (unclosed brackets)
+        if 'unexpected EOF' in error_msg or 'EOF while scanning' in error_msg:
+            open_p = code.count('(')
+            close_p = code.count(')')
+            open_b = code.count('[')
+            close_b = code.count(']')
+            open_c = code.count('{')
+            close_c = code.count('}')
+            
+            code = code.rstrip()
+            if open_p > close_p:
+                code += ')' * (open_p - close_p)
+            if open_b > close_b:
+                code += ']' * (open_b - close_b)
+            if open_c > close_c:
+                code += '}' * (open_c - close_c)
+            errors_fixed.append("Fixed unclosed brackets")
+            
+            try:
+                ast.parse(code)
+            except SyntaxError as e2:
+                return False, code, f"Syntax error: {e2}"
+        else:
+            return False, code, f"Syntax error: {e}"
+    
+    # Step 9: Fix self.wait without parentheses
+    if re.search(r'self\.wait[^(]', code):
+        code = re.sub(r'self\.wait\s*$', 'self.wait()', code, flags=re.MULTILINE)
+        code = re.sub(r'self\.wait\s+', 'self.wait() ', code)
+        errors_fixed.append("Fixed self.wait -> self.wait()")
+    
+    if errors_fixed:
+        logger.info(f"Code validation fixed {len(errors_fixed)} issues: {errors_fixed}")
+    
+    return True, code, ""
+
+
 def generate_code_with_model(prompt: str, model_choice: str) -> tuple:
     if not prompt or not prompt.strip():
         return False, "Please enter a description of what you want to visualize"
@@ -277,7 +420,14 @@ def generate_code_with_model(prompt: str, model_choice: str) -> tuple:
                 return False, "Could not initialize the RAG + Finetuned model pipeline"
             
             code = pipeline.generate_manim_code(prompt, use_rag=True)
-            return True, code
+            
+            # Validate and fix the generated code
+            is_valid, fixed_code, error_msg = validate_and_fix_manim_code(code)
+            if not is_valid:
+                logger.warning(f"Finetuned model code validation failed: {error_msg}")
+                return False, f"# Code validation error: {error_msg}\n# Original code below may have errors:\n\n{code}"
+            
+            return True, fixed_code
             
         except Exception as e:
             logger.warning(f"Finetuned model failed: {e}")
@@ -330,7 +480,15 @@ User Request: {prompt}"""
                 return False, "Failed to initialize Groq client"
             
             code = groq_client.generate(augmented_prompt, max_tokens=2048, temperature=0.7)
-            return True, code
+            
+            # Validate and fix the generated code
+            is_valid, fixed_code, error_msg = validate_and_fix_manim_code(code)
+            if not is_valid:
+                logger.warning(f"Generated code validation failed: {error_msg}")
+                # Return the error but still provide the code for debugging
+                return False, f"# Code validation error: {error_msg}\n# Original code below may have errors:\n\n{code}"
+            
+            return True, fixed_code
             
         except Exception as e:
             return False, f"Groq API error: {str(e)}"
@@ -339,6 +497,11 @@ User Request: {prompt}"""
 
 
 def compile_video(code: str, quality: str = "medium") -> tuple:
+    # First, validate and fix the code
+    is_valid, code, error_msg = validate_and_fix_manim_code(code)
+    if not is_valid:
+        return False, f"Code validation failed: {error_msg}"
+    
     # Extract the class name
     class_name = extract_class_name(code)
     if not class_name:
