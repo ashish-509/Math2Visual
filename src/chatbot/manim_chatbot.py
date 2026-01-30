@@ -35,33 +35,47 @@ class ManimSyntaxChatbot:
         "temperature": 0.2,      # Lower = more consistent formatting
     }
     
-    # System prompt for syntax-focused answers
-    SYSTEM_PROMPT = """You are a Manim code assistant. 
+    # System prompt for helpful chatbot answers
+    SYSTEM_PROMPT = """You are a helpful Manim documentation assistant chatbot. You help users understand Manim concepts, syntax, and best practices.
 
-STRICT OUTPUT FORMAT - Follow exactly:
+BEHAVIOR GUIDELINES:
+- Be conversational and helpful, like a knowledgeable friend
+- Answer questions naturally with explanations
+- Only include code when the user asks for it or when it's genuinely helpful
+- For conceptual questions, explain clearly without code
+- For "how do I" questions, provide both explanation AND a code example
 
-1. First, write a SHORT explanation (1-2 sentences max)
+RESPONSE STYLE:
+1. Start with a direct, helpful answer to the question
+2. Provide context or explanation as needed
+3. If code would be helpful, include it in a ```python block
+4. Keep explanations clear and beginner-friendly
 
-2. Then write COMPLETE code in a SINGLE code block like this:
+WHEN TO INCLUDE CODE:
+- User asks "how do I...", "show me...", "example of..."
+- User asks about specific syntax or parameters
+- Code would genuinely clarify the explanation
 
+WHEN NOT TO INCLUDE CODE:
+- User asks "what is...", "why does...", "explain..."
+- User asks conceptual or theoretical questions
+- User is asking for clarification about something
+
+CODE FORMAT (when needed):
 ```python
 from manim import *
 
-class MyScene(Scene):
+class ExampleScene(Scene):
     def construct(self):
-        # all code goes here
-        shape = Circle()
-        self.play(Create(shape))
-        self.wait()
+        # Your code here
+        pass
 ```
 
 RULES:
-- Put ALL code in ONE ```python block - never split code across multiple blocks
-- Always start code with: from manim import *
-- Always use a Scene class with construct method
-- Use Create() not ShowCreation()
-- Never use placeholders like "..." or "pass" - write real code
-- Keep the explanation BEFORE the code block, not mixed in"""
+- Use Create() not ShowCreation() (modern Manim API)
+- Be accurate based on the documentation provided
+- If you're unsure, say so honestly
+- Keep responses focused and not overly long"""
 
     # INITIALIZATION
     
@@ -228,12 +242,14 @@ RULES:
             # Step 1: Retrieve relevant context from docs
             context = self.rag_pipeline.retrieve_context(question)
             
-            # Step 2: Build the prompt
+            # Step 2: Build the prompt (question + context)
             prompt = self._build_prompt(question, context)
             
-            # Step 3: Generate response with LLM
-            answer = self.llm_client.generate(
+            # Step 3: Generate response with LLM using chat-specific method
+            # This uses our custom system prompt instead of the code-generation one
+            answer = self.llm_client.generate_chat_response(
                 prompt=prompt,
+                system_prompt=self.SYSTEM_PROMPT,
                 max_tokens=self.LLM_SETTINGS["max_tokens"],
                 temperature=self.LLM_SETTINGS["temperature"]
             )
@@ -255,16 +271,20 @@ RULES:
             }
     
     def _build_prompt(self, question: str, context: str) -> str:
-        prompt = f"""{self.SYSTEM_PROMPT}
+        """Build the user prompt with context from documentation."""
+        if context:
+            prompt = f"""Based on this Manim documentation:
 
-=== Relevant Manim Documentation ===
-{context if context else "No specific documentation found for this query."}
+{context}
 
-=== User Question ===
-{question}
+User's question: {question}
 
-=== Your Answer ===
-"""
+Please provide a helpful answer based on the documentation above."""
+        else:
+            prompt = f"""User's question: {question}
+
+Please provide a helpful answer about Manim based on your knowledge."""
+        
         return prompt
     
     def _cache_response(self, key: str, response: Dict):
