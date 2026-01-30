@@ -263,6 +263,244 @@ def extract_class_name(code: str) -> Optional[str]:
     return None
 
 
+def clean_text_for_tts(text: str) -> str:
+    """
+    Clean text for TTS by removing code, warnings, LLM meta-text, and technical content.
+    Only keep natural language that should be spoken aloud.
+    """
+    if not text:
+        return ""
+    
+    # First, remove common LLM meta-text patterns (these should NEVER be spoken)
+    llm_meta_patterns = [
+        r'^Here is the.*?:?\s*',
+        r'^Here\'s the.*?:?\s*',
+        r'^Below is the.*?:?\s*',
+        r'^The following is.*?:?\s*',
+        r'^This is the.*?narration.*?:?\s*',
+        r'^This is the.*?script.*?:?\s*',
+        r'^I\'ll provide.*?:?\s*',
+        r'^I will provide.*?:?\s*',
+        r'^Let me.*?:?\s*',
+        r'^Sure,.*?:?\s*',
+        r'^Certainly,.*?:?\s*',
+        r'^Of course,.*?:?\s*',
+        r'^Here you go.*?:?\s*',
+        r'^\*\*.*?\*\*\s*',  # Markdown bold headers
+        r'^#+\s+.*?\n',  # Markdown headers
+        r'^Note:.*?\n',
+        r'^NOTE:.*?\n',
+        r'^Warning:.*?\n',
+        r'^WARNING:.*?\n',
+        r'^Error:.*?\n',
+        r'^ERROR:.*?\n',
+        r'^Tip:.*?\n',
+        r'^TIP:.*?\n',
+    ]
+    
+    result = text
+    for pattern in llm_meta_patterns:
+        result = re.sub(pattern, '', result, flags=re.IGNORECASE | re.MULTILINE)
+    
+    lines = result.split('\n')
+    cleaned_lines = []
+    
+    # Patterns to skip entirely
+    skip_patterns = [
+        r'^#',  # Comments
+        r'^from\s+\w+\s+import',  # Import statements
+        r'^import\s+',  # Import statements
+        r'^\s*class\s+\w+',  # Class definitions
+        r'^\s*def\s+\w+',  # Function definitions
+        r'^\s*self\.',  # Self references
+        r'^```',  # Code fences
+        r'^\s*WARNING',  # Warnings
+        r'^\s*Error',  # Errors
+        r'^\s*#\s*WARNING',  # Code comments with warnings
+        r'^\s*\w+\s*=\s*\w+\(',  # Variable assignments like x = Circle()
+        r'^\s*return\s+',  # Return statements
+        r'^\s*if\s+.*:',  # If statements
+        r'^\s*for\s+.*:',  # For loops
+        r'^\s*while\s+.*:',  # While loops
+        r'^\s*try:',  # Try blocks
+        r'^\s*except',  # Except blocks
+        r'^\s*\[',  # Lists
+        r'^\s*\{',  # Dicts
+        r'\.scale\(',  # Manim scale
+        r'\.move_to\(',  # Manim positioning
+        r'\.next_to\(',  # Manim positioning
+        r'MathTex\(',  # MathTex
+        r'Text\(',  # Text objects
+        r'Axes\(',  # Axes
+        r'\.plot\(',  # Plot
+        r'VGroup\(',  # VGroup
+        r'FadeIn\(',  # Animations
+        r'FadeOut\(',  # Animations
+        r'Create\(',  # Animations
+        r'Write\(',  # Animations
+        r'python',  # Code language markers
+        r'```',  # Code fences
+        r'manim',  # Manim references in code
+    ]
+    
+    for line in lines:
+        stripped = line.strip()
+        
+        # Skip empty lines
+        if not stripped:
+            continue
+        
+        # Skip very short lines (likely artifacts)
+        if len(stripped) < 3:
+            continue
+        
+        # Check if line matches any skip pattern
+        should_skip = False
+        for pattern in skip_patterns:
+            if re.search(pattern, stripped, re.IGNORECASE):
+                should_skip = True
+                break
+        
+        if should_skip:
+            continue
+        
+        # Skip lines that look like code (have parentheses with parameters)
+        if re.search(r'\w+\([^)]*\)', stripped) and '=' in stripped:
+            continue
+        
+        # Skip lines that are mostly symbols/punctuation
+        alpha_chars = sum(1 for c in stripped if c.isalpha() or c.isspace())
+        if len(stripped) > 0 and alpha_chars / len(stripped) < 0.6:
+            continue
+        
+        # Skip lines that look like code variable names or technical terms
+        if re.match(r'^[a-z_]+[A-Z]', stripped):  # camelCase
+            continue
+        if re.match(r'^[a-z]+_[a-z]+', stripped):  # snake_case
+            continue
+        
+        # This line looks like natural language, keep it
+        cleaned_lines.append(stripped)
+    
+    # Join and clean up
+    result = ' '.join(cleaned_lines)
+    
+    # Remove any remaining code-like patterns
+    result = re.sub(r'```[\s\S]*?```', '', result)  # Remove code blocks
+    result = re.sub(r'`[^`]+`', '', result)  # Remove inline code
+    result = re.sub(r'\*\*[^*]+\*\*', '', result)  # Remove markdown bold
+    result = re.sub(r'\*[^*]+\*', '', result)  # Remove markdown italic
+    result = re.sub(r'\[[^\]]+\]\([^)]+\)', '', result)  # Remove markdown links
+    result = re.sub(r'https?://\S+', '', result)  # Remove URLs
+    result = re.sub(r'\s+', ' ', result)  # Normalize whitespace
+    
+    # Final cleanup - remove any remaining technical artifacts
+    result = re.sub(r'\b(def|class|import|from|self|return|if|else|for|while|try|except)\b', '', result)
+    result = re.sub(r'\s+', ' ', result)  # Normalize whitespace again
+    
+    return result.strip()
+
+
+def fix_layout_issues_in_code(code: str) -> str:
+    """
+    Post-process generated code to fix common layout issues:
+    - Text too large (enforce strict scale limits)
+    - Axes too large
+    - Missing scale on text elements
+    - Long text not split
+    """
+    if not code:
+        return code
+    
+    lines = code.split('\n')
+    fixed_lines = []
+    
+    for i, line in enumerate(lines):
+        fixed_line = line
+        
+        
+        scale_match = re.search(r'\.scale\s*\(\s*([\d.]+)\s*\)', fixed_line)
+        if scale_match:
+            try:
+                scale_val = float(scale_match.group(1))
+                
+                # Check if this is a Text element
+                if re.search(r'\bText\s*\(', fixed_line):
+                    # Title text (to_edge(UP) or first few lines)
+                    if 'to_edge(UP' in fixed_line:
+                        max_scale = 0.45
+                    # Labels (next_to, small text)
+                    elif 'next_to' in fixed_line or 'label' in fixed_line.lower():
+                        max_scale = 0.22
+                    # Body text
+                    else:
+                        max_scale = 0.32
+                    
+                    if scale_val > max_scale:
+                        fixed_line = re.sub(
+                            r'\.scale\s*\(\s*[\d.]+\s*\)',
+                            f'.scale({max_scale})',
+                            fixed_line
+                        )
+                
+                # Check if this is a MathTex element
+                elif re.search(r'\b(MathTex|Tex)\s*\(', fixed_line):
+                    if 'next_to' in fixed_line or 'label' in fixed_line.lower():
+                        max_scale = 0.22
+                    else:
+                        max_scale = 0.5
+                    
+                    if scale_val > max_scale:
+                        fixed_line = re.sub(
+                            r'\.scale\s*\(\s*[\d.]+\s*\)',
+                            f'.scale({max_scale})',
+                            fixed_line
+                        )
+                
+                # Check if this is Axes - limit scale
+                elif re.search(r'\bAxes\s*\(', fixed_line) or re.search(r'\baxes\.', fixed_line):
+                    if scale_val > 0.75:
+                        fixed_line = re.sub(
+                            r'\.scale\s*\(\s*[\d.]+\s*\)',
+                            '.scale(0.7)',
+                            fixed_line
+                        )
+            except ValueError:
+                pass
+        
+        # If Text has no scale, add one
+        if re.search(r'\bText\s*\([^)]+\)\s*$', fixed_line.strip()):
+            if '.scale' not in fixed_line:
+                fixed_line = fixed_line.rstrip() + '.scale(0.32)'
+        
+        # If MathTex has no scale, add one
+        if re.search(r'\b(MathTex|Tex)\s*\([^)]+\)\s*$', fixed_line.strip()):
+            if '.scale' not in fixed_line:
+                fixed_line = fixed_line.rstrip() + '.scale(0.5)'
+        
+        # Fix axes that are too large - add size constraints
+        if 'Axes(' in fixed_line:
+            # Check for x_length
+            if 'x_length' in fixed_line:
+                # Reduce if too large
+                x_len_match = re.search(r'x_length\s*=\s*([\d.]+)', fixed_line)
+                if x_len_match:
+                    x_len = float(x_len_match.group(1))
+                    if x_len > 6:
+                        fixed_line = re.sub(r'x_length\s*=\s*[\d.]+', 'x_length=5', fixed_line)
+            
+            if 'y_length' in fixed_line:
+                y_len_match = re.search(r'y_length\s*=\s*([\d.]+)', fixed_line)
+                if y_len_match:
+                    y_len = float(y_len_match.group(1))
+                    if y_len > 4:
+                        fixed_line = re.sub(r'y_length\s*=\s*[\d.]+', 'y_length=3', fixed_line)
+        
+        fixed_lines.append(fixed_line)
+    
+    return '\n'.join(fixed_lines)
+
+
 def validate_and_fix_manim_code(code: str) -> Tuple[bool, str, str]:
     """
     Comprehensive validation and fixing of Manim code before compilation.
@@ -273,6 +511,9 @@ def validate_and_fix_manim_code(code: str) -> Tuple[bool, str, str]:
     
     original_code = code
     errors_fixed = []
+    
+    # Step 0: Fix layout issues first
+    code = fix_layout_issues_in_code(code)
     
     # Step 1: Basic cleanup
     code = code.strip()
@@ -313,6 +554,78 @@ To plot mathematical functions like y = f(x), use Axes with .plot():
 
 Please regenerate the code with the correct approach."""
 
+    # Step 4c: Fix broken list syntax (var = [] followed by indented items)
+    # Pattern: "var = []" on one line, then indented items, then "]"
+    # This handles cases like:
+    #   labels = []
+    #       Text("..."),
+    #       Text("..."),
+    #   ]
+    
+    def fix_broken_lists(code_text):
+        """Fix broken list syntax where = [] is followed by indented items then ]"""
+        lines = code_text.split('\n')
+        fixed_lines = []
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i]
+            
+            # Check if line matches "var = []" pattern
+            match = re.match(r'^(\s*)(\w+)\s*=\s*\[\]\s*$', line)
+            if match:
+                indent = match.group(1)
+                var_name = match.group(2)
+                
+                # Look ahead for indented items followed by ]
+                items = []
+                j = i + 1
+                while j < len(lines):
+                    next_line = lines[j]
+                    stripped = next_line.strip()
+                    
+                    # Check if this is the closing bracket
+                    if stripped == ']':
+                        # Found the pattern - fix it
+                        if items:
+                            fixed_lines.append(f'{indent}{var_name} = [')
+                            for item in items:
+                                fixed_lines.append(item)
+                            fixed_lines.append(f'{indent}]')
+                            i = j + 1
+                            break
+                        else:
+                            # Empty list, keep as is
+                            fixed_lines.append(line)
+                            i += 1
+                            break
+                    elif stripped and not stripped.startswith('#'):
+                        # This is a list item
+                        items.append(next_line)
+                        j += 1
+                    elif not stripped:
+                        # Empty line, skip
+                        j += 1
+                    else:
+                        # Something else, not our pattern
+                        fixed_lines.append(line)
+                        i += 1
+                        break
+                else:
+                    # Reached end without finding ], keep original
+                    fixed_lines.append(line)
+                    i += 1
+            else:
+                fixed_lines.append(line)
+                i += 1
+        
+        return '\n'.join(fixed_lines)
+    
+    old_code = code
+    code = fix_broken_lists(code)
+    if code != old_code:
+        errors_fixed.append("Fixed broken list syntax (var = [] followed by items)")
+
     # Step 5: Fix common syntax issues
     lines = code.split('\n')
     fixed_lines = []
@@ -322,6 +635,10 @@ Please regenerate the code with the correct approach."""
         line = line.replace('slef.', 'self.')
         line = line.replace('sefl.', 'self.')
         line = line.replace('sel.', 'self.')
+        
+        # Fix MathMathTex -> MathTex typo (LLM sometimes doubles it)
+        line = line.replace('MathMathTex', 'MathTex')
+        line = line.replace('TextText', 'Text')
         
         # Fix unclosed parentheses in single lines
         if 'self.play(' in line or 'self.add(' in line:
@@ -462,12 +779,37 @@ def generate_code_with_model(prompt: str, model_choice: str) -> tuple:
             
             # Layout rules to prevent text overlap and overflow
             layout_rules = """
-CRITICAL LAYOUT RULES - MUST FOLLOW:
-1. TEXT SIZING: Title .scale(0.6), main text .scale(0.5), equations .scale(0.6), labels .scale(0.4)
-2. LINE LENGTH: Max 40 chars per line. Use "\\n" for longer text.
-3. FRAME SAFE ZONE: -6 to +6 horizontal, -3.5 to +3.5 vertical
-4. PREVENT OVERLAP: ALWAYS FadeOut previous content BEFORE showing new content
-5. PATTERN: FadeOut old -> Create new scaled -> Write/FadeIn new"""
+==============================================
+                    MANDATORY LAYOUT RULES (VIOLATIONS CAUSE ERRORS)
+==============================================
+
+*** SCREEN SAFE ZONE: ***
+- Horizontal: -5.5 to +5.5 only
+- Vertical: -3.2 to +3.2 only
+- Content OUTSIDE these bounds gets CUT OFF
+
+*** TEXT SCALE LIMITS: ***
+- Titles: .scale(0.45) maximum
+- Body text: .scale(0.32) maximum
+- Math: .scale(0.5) maximum
+- Labels: .scale(0.22) maximum
+- Split text longer than 35 chars with \\n
+
+*** OVERLAP PREVENTION: ***
+- ALWAYS FadeOut previous content before showing new content
+- Maximum 3 visible elements at once
+- Pattern: FadeOut(old) -> then -> Write(new)
+
+*** AXES/GRAPHS: ***
+- Use Axes with x_length=5, y_length=3 maximum
+- Scale axes with .scale(0.7)
+- Position graphs at DOWN * 0.5 to leave room for labels above
+
+*** TIMING: ***
+- Total animation: 20-40 seconds
+- self.wait(1) after each element
+- End with: self.play(*[FadeOut(mob) for mob in self.mobjects])
+"""
             
             # Build augmented prompt with RAG context
             if context:
@@ -632,47 +974,68 @@ CRITICAL TIMING REQUIREMENT:
         duration_instruction = ""
     
     # Build the teaching prompt - designed for perfect audio-video sync
-    teaching_prompt = f"""You are a math teacher giving a live lesson. The animation shows visuals while YOU TEACH the concept.
+    teaching_prompt = f"""You are creating a voiceover script for a math teaching video animation.
 
+==============================================================================
+                         CRITICAL OUTPUT REQUIREMENTS
+==============================================================================
+
+*** OUTPUT FORMAT: ***
+- Output ONLY the spoken narration text
+- Start speaking IMMEDIATELY - no introductions
+- NO meta-text like "Here is the narration:" or "Sure, here's..."
+- NO markdown, NO headers, NO bullet points
+- NO timestamps like [0:00] or (pause)
+- Just plain spoken words, nothing else
+
+*** WHAT YOU ARE NARRATING: ***
 Topic: "{description}"
 
-Animation code (this shows WHEN things appear - sync your teaching to these moments):
+Animation code (study this to understand WHEN visuals appear):
 ```python
 {code}
 ```
 {duration_instruction}
 
-TEACHING RULES:
-1. NO GREETING, NO SUMMARY - teach from first second to last
-2. DO NOT describe visuals ("we see a circle") - TEACH the concept ("a circle is a shape where every point is the same distance from the center")
-3. When a formula appears, EXPLAIN what it means, don't just read it
-4. When a shape appears, TEACH why it matters to the concept
-5. When something transforms, EXPLAIN the mathematical relationship
+==============================================
+                              TIMING RULES
+==============================================
 
-WHAT TO DO:
-- Circle appears → "A circle is defined by all points equidistant from a center point"
-- Formula A=πr² appears → "The area equals pi times the radius squared - pi is about 3.14"
-- Triangle transforms to rectangle → "Notice how we can rearrange these pieces - the area stays the same"
+*** CRITICAL FOR AUDIO-VIDEO SYNC: ***
+- Speaking rate: approximately 2.5 words per second
+- Each self.wait(N) in code = N seconds of speaking time
+- Each self.play() takes about 1 second
+- Your script length MUST match the video duration
 
-WHAT NOT TO DO:
-- "We see a circle on the screen" 
-- "Now the formula appears" 
-- "The text says..." 
-- "Hello everyone" 
-- "So to summarize" 
+*** PACING: ***
+- When title appears → speak 2-3 sentences about the topic
+- When explanation text appears → elaborate on that specific point
+- When graph/visual appears → describe what it represents mathematically
+- When formula appears → explain what each part means
+- At the end → brief concluding thought (1 sentence)
 
-TIMING:
-- Follow the order of animations in the code
-- Pace your explanation to match self.wait() durations
-- ~2.5 words per second of video
+==============================================
+                            CONTENT RULES
+==============================================
 
-STYLE:
-- Talk like a passionate teacher in a classroom
-- Explain WHY, not just WHAT
-- Use analogies from everyday life
-- Simple words for beginners
+*** DO: ***
+- Teach the concept - explain WHY and HOW
+- When formula shows: "The area formula pi r squared tells us..."
+- When graph shows: "This parabola represents how..."
+- Use simple, clear language a student would understand
+- Sound like an enthusiastic teacher
 
-Write ONLY the teaching narration. No timestamps, no brackets, no stage directions."""
+*** DO NOT: ***
+- "We see a circle appearing" (describing visuals)
+- "Hello everyone" or "Welcome" (greetings)
+- "In this video" or "Today we'll learn" (intros)
+- "So to summarize" or "In conclusion" (summaries)
+- "As you can see" or "Notice how" (visual references)
+- Any code, any technical syntax, any warnings
+
+==============================================
+
+Now write ONLY the narration text. Start speaking immediately about the topic."""
     
     # Use the selected model
     if model_choice == "Mistral-7B (Finetuned)":
@@ -771,13 +1134,19 @@ def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
     if not audio_text or not audio_text.strip():
         return False, "No audio text provided"
     
+    # Clean the audio text - remove any code, warnings, or technical content
+    cleaned_audio_text = clean_text_for_tts(audio_text)
+    
+    if not cleaned_audio_text or not cleaned_audio_text.strip():
+        return False, "No speakable content in the audio text after cleaning"
+    
     output_dir = os.path.join(PROJECT_ROOT, "outputs")
     os.makedirs(output_dir, exist_ok=True)
     
     # Generate audio file
     audio_path = None
     try:
-        tts = gTTS(text=audio_text, lang="en", slow=False)
+        tts = gTTS(text=cleaned_audio_text, lang="en", slow=False)
         audio_path = os.path.join(output_dir, "temp_narration.mp3")
         tts.save(audio_path)
         
