@@ -444,6 +444,15 @@ if st.session_state.current_page == "Studio":
             elif not health:
                 st.error("Backend not connected. Please start the backend server.")
             else:
+                # Clear all previous generation state when starting a new prompt
+                st.session_state.generated_code = ""
+                st.session_state.video_path = None
+                st.session_state.video_error = None
+                st.session_state.teaching_script = ""
+                st.session_state.teaching_audio_path = None
+                st.session_state.final_video_path = None
+                st.session_state.final_video_error = None
+                
                 with st.spinner("Generating Manim script..."):
                     success, result = generate_code_api(user_input, model_choice)
                     st.session_state.generated_code = result

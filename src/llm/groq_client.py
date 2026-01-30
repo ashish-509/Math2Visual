@@ -288,6 +288,152 @@ Now generate the complete Manim code. Output ONLY the Python code, starting with
             logger.error(f"Groq API error: {e}")
             return f"# Error generating code: {str(e)}"
     
+    def generate_narration(self, prompt, max_tokens=1024, temperature=0.8):
+        """
+        Generate teaching narration script using Groq API.
+        This is SEPARATE from code generation - outputs spoken text only.
+        
+        prompt: The teaching prompt with topic and timing info
+        max_tokens: Maximum tokens to generate
+        temperature: Sampling temperature (0-1)
+        
+        Returns: Generated narration text as string
+        """
+        try:
+            # System prompt specifically for narration (NOT code)
+            system_prompt = """You are a math teacher creating a voiceover script for an educational animation video.
+
+YOUR TASK: Write ONLY the spoken narration text that will be read aloud.
+
+CRITICAL RULES:
+1. Output ONLY plain spoken words - no code, no formatting, no markdown
+2. Start speaking IMMEDIATELY about the math concept - no introductions
+3. DO NOT output any Python code, imports, class definitions, or programming syntax
+4. DO NOT say "Here is the narration" or similar - just start the narration directly
+5. DO NOT use bullet points, numbers, or formatting - just flowing speech
+6. Sound like an enthusiastic teacher explaining to students
+
+FORBIDDEN (never include):
+- "from manim import" or any code
+- "def", "class", "self.", "import"
+- "Here is...", "Sure...", "Certainly..."
+- "Hello everyone", "Welcome", "In this video"
+- Markdown like ** or # or ```
+- Timestamps like [0:00]
+
+EXAMPLE OUTPUT:
+"Local minima and maxima are fascinating points on a curve. At these special locations, the function momentarily stops increasing or decreasing. Think of it like a ball rolling on a hill - at the very top, it pauses before rolling down the other side. That peak is a local maximum. Similarly, the bottom of a valley is a local minimum. Mathematically, we find these points where the derivative equals zero."
+
+Write natural, flowing speech that teaches the concept."""
+
+            logger.info(f"Generating narration with Groq ({self.model})...")
+            
+            # Call Groq API with narration-specific prompt
+            chat_completion = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                model=self.model,
+                max_tokens=max_tokens, 
+                temperature=temperature,
+                top_p=0.9
+            )
+            
+            # Extract the generated narration
+            narration = chat_completion.choices[0].message.content
+            
+            # Clean up - remove any accidental code or markdown
+            narration = self._clean_narration(narration)
+            
+            logger.info("Narration generation complete")
+            return narration
+            
+        except Exception as e:
+            logger.error(f"Groq API error generating narration: {e}")
+            return f"Error generating narration: {str(e)}"
+    
+    def _clean_narration(self, text):
+        """Clean narration text - remove any code or markdown that slipped through."""
+        if not text:
+            return ""
+        
+        # Remove code blocks
+        text = re.sub(r'```[\s\S]*?```', '', text)
+        text = re.sub(r'`[^`]+`', '', text)
+        
+        # Remove markdown formatting
+        text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # Bold -> plain
+        text = re.sub(r'\*([^*]+)\*', r'\1', text)  # Italic -> plain
+        text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)  # Headers
+        text = re.sub(r'^\s*[-*]\s+', '', text, flags=re.MULTILINE)  # Bullet points
+        text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)  # Numbered lists
+        
+        # Remove any lines that look like code
+        lines = text.split('\n')
+        clean_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # Skip code-like lines
+            if any(pattern in stripped for pattern in [
+                'from manim', 'import ', 'def ', 'class ', 'self.', 
+                '```', 'python', '.scale(', '.play(', '.wait(', 
+                'FadeIn', 'FadeOut', 'Create', 'Write', 'Axes(',
+                'MathTex', 'Text(', '= ', 'lambda'
+            ]):
+                continue
+            # Skip lines starting with common meta-text
+            if stripped.lower().startswith(('here is', 'here\'s', 'sure', 'certainly', 'of course')):
+                continue
+            if stripped:
+                clean_lines.append(stripped)
+        
+        result = ' '.join(clean_lines)
+        
+        # Normalize whitespace
+        result = re.sub(r'\s+', ' ', result).strip()
+        
+        return result
+    
+    def generate_chat_response(self, prompt, system_prompt, max_tokens=1024, temperature=0.3):
+ 
+        try:
+            logger.info(f"Generating chat response with Groq ({self.model})...")
+            
+            # Call Groq API with custom system prompt
+            chat_completion = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                model=self.model,
+                max_tokens=max_tokens, 
+                temperature=temperature,
+                top_p=0.9
+            )
+            
+            # Extract the response
+            response = chat_completion.choices[0].message.content
+            
+            logger.info("Chat response generation complete")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Groq API error generating chat response: {e}")
+            return f"I'm sorry, I encountered an error: {str(e)}"
+    
     def _clean_code(self, code):
         """Clean and validate the generated code comprehensively."""
         # Remove markdown code fences

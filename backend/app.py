@@ -1066,7 +1066,8 @@ Now write ONLY the narration text. Start speaking immediately about the topic.""
             if groq_client is None:
                 return False, "Failed to initialize Groq client"
             
-            script = groq_client.generate(teaching_prompt, max_tokens=1024, temperature=0.8)
+            # Use generate_narration() NOT generate() - this uses a narration-specific prompt
+            script = groq_client.generate_narration(teaching_prompt, max_tokens=1024, temperature=0.8)
             return True, script
             
         except Exception as e:
