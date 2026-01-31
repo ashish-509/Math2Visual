@@ -72,6 +72,16 @@ except ImportError as e:
     CHATBOT_AVAILABLE = False
     logger.warning(f"Manim chatbot not available: {e}")
 
+# Animation features (templates, themes, video processing)
+try:
+    from src.animation.templates import get_template_library
+    from src.animation.color_themes import get_color_theme_manager
+    from src.animation.video_processor import get_video_processor
+    ANIMATION_FEATURES_AVAILABLE = True
+except ImportError as e:
+    ANIMATION_FEATURES_AVAILABLE = False
+    logger.warning(f"Animation features not available: {e}")
+
 
 # Create FastAPI app
 
@@ -264,10 +274,7 @@ def extract_class_name(code: str) -> Optional[str]:
 
 
 def clean_text_for_tts(text: str) -> str:
-    """
-    Clean text for TTS by removing code, warnings, LLM meta-text, and technical content.
-    Only keep natural language that should be spoken aloud.
-    """
+  
     if not text:
         return ""
     
@@ -502,10 +509,7 @@ def fix_layout_issues_in_code(code: str) -> str:
 
 
 def validate_and_fix_manim_code(code: str) -> Tuple[bool, str, str]:
-    """
-    Comprehensive validation and fixing of Manim code before compilation.
-    Returns: (is_valid, fixed_code, error_message)
-    """
+
     if not code or not code.strip():
         return False, code, "Empty code provided"
     
@@ -777,40 +781,6 @@ def generate_code_with_model(prompt: str, model_choice: str) -> tuple:
             if rag and rag.is_indexed:
                 context = rag.retrieve_context(prompt)
             
-            # Layout rules to prevent text overlap and overflow
-            layout_rules = """
-==============================================
-                    MANDATORY LAYOUT RULES (VIOLATIONS CAUSE ERRORS)
-==============================================
-
-*** SCREEN SAFE ZONE: ***
-- Horizontal: -5.5 to +5.5 only
-- Vertical: -3.2 to +3.2 only
-- Content OUTSIDE these bounds gets CUT OFF
-
-*** TEXT SCALE LIMITS: ***
-- Titles: .scale(0.45) maximum
-- Body text: .scale(0.32) maximum
-- Math: .scale(0.5) maximum
-- Labels: .scale(0.22) maximum
-- Split text longer than 35 chars with \\n
-
-*** OVERLAP PREVENTION: ***
-- ALWAYS FadeOut previous content before showing new content
-- Maximum 3 visible elements at once
-- Pattern: FadeOut(old) -> then -> Write(new)
-
-*** AXES/GRAPHS: ***
-- Use Axes with x_length=5, y_length=3 maximum
-- Scale axes with .scale(0.7)
-- Position graphs at DOWN * 0.5 to leave room for labels above
-
-*** TIMING: ***
-- Total animation: 20-40 seconds
-- self.wait(1) after each element
-- End with: self.play(*[FadeOut(mob) for mob in self.mobjects])
-"""
-            
             # Build augmented prompt with RAG context
             if context:
                 augmented_prompt = f"""Use the following Manim documentation as reference:
@@ -818,13 +788,12 @@ def generate_code_with_model(prompt: str, model_choice: str) -> tuple:
 === MANIM DOCUMENTATION ===
 {context}
 === END DOCUMENTATION ===
-{layout_rules}
 
 User Request: {prompt}
 
 Generate complete, working Manim code based on the documentation above."""
             else:
-                augmented_prompt = f"""{layout_rules}
+                augmented_prompt = f"""
 
 User Request: {prompt}"""
             
@@ -1508,6 +1477,189 @@ def get_available_models():
         models.append("Phi-2")
     
     return {"models": models}
+
+
+# Animation Features Endpoints
+
+@app.get("/templates/categories")
+def get_template_categories():
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"categories": [], "error": "Animation features not available"}
+    
+    library = get_template_library()
+    return {"categories": library.get_categories()}
+
+
+@app.get("/templates/{category}")
+def get_templates_in_category(category: str):
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"templates": [], "error": "Animation features not available"}
+    
+    library = get_template_library()
+    templates = library.get_templates_in_category(category)
+    return {"templates": templates, "category": category}
+
+
+@app.get("/templates/{category}/{template_id}")
+def get_template(category: str, template_id: str, theme: Optional[str] = None):
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"error": "Animation features not available"}
+    
+    library = get_template_library()
+    template = library.get_template(category, template_id)
+    
+    if not template:
+        return {"error": f"Template not found: {category}/{template_id}"}
+    
+    code = template["code"]
+    
+    if theme:
+        theme_manager = get_color_theme_manager()
+        code = theme_manager.apply_theme_to_code(code, theme)
+    
+    return {
+        "name": template["name"],
+        "description": template["description"],
+        "parameters": template["parameters"],
+        "code": code
+    }
+
+
+@app.get("/templates/search")
+def search_templates(query: str):
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"results": [], "error": "Animation features not available"}
+    
+    library = get_template_library()
+    results = library.search_templates(query)
+    return {"results": results, "query": query}
+
+
+@app.get("/themes")
+def get_color_themes():
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"themes": [], "error": "Animation features not available"}
+    
+    theme_manager = get_color_theme_manager()
+    themes = theme_manager.get_themes_list()
+    return {"themes": themes}
+
+
+@app.get("/themes/{theme_id}")
+def get_theme(theme_id: str):
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"error": "Animation features not available"}
+    
+    theme_manager = get_color_theme_manager()
+    theme = theme_manager.get_theme(theme_id)
+    
+    if not theme:
+        return {"error": f"Theme not found: {theme_id}"}
+    
+    return theme
+
+
+class ApplyThemeRequest(BaseModel):
+    code: str
+    theme_id: str
+
+
+@app.post("/themes/apply")
+def apply_theme_to_code(request: ApplyThemeRequest):
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"success": False, "error": "Animation features not available"}
+    
+    theme_manager = get_color_theme_manager()
+    themed_code = theme_manager.apply_theme_to_code(request.code, request.theme_id)
+    
+    return {"success": True, "code": themed_code}
+
+
+class VideoProcessRequest(BaseModel):
+    video_path: str
+    target_format: str
+    quality: str = "medium"
+
+
+@app.post("/video/convert")
+def convert_video_format(request: VideoProcessRequest):
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"success": False, "error": "Animation features not available"}
+    
+    processor = get_video_processor()
+    
+    if not processor.ffmpeg_available:
+        return {"success": False, "error": "FFmpeg not available on server"}
+    
+    success, result = processor.convert_format(
+        request.video_path,
+        request.target_format,
+        quality=request.quality
+    )
+    
+    if success:
+        return {"success": True, "output_path": result}
+    else:
+        return {"success": False, "error": result}
+
+
+class SpeedChangeRequest(BaseModel):
+    video_path: str
+    speed_factor: float
+
+
+@app.post("/video/speed")
+def change_video_speed(request: SpeedChangeRequest):
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"success": False, "error": "Animation features not available"}
+    
+    processor = get_video_processor()
+    
+    if not processor.ffmpeg_available:
+        return {"success": False, "error": "FFmpeg not available on server"}
+    
+    success, result = processor.change_speed(request.video_path, request.speed_factor)
+    
+    if success:
+        return {"success": True, "output_path": result}
+    else:
+        return {"success": False, "error": result}
+
+
+@app.post("/video/info")
+def get_video_info(video_path: str):
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"error": "Animation features not available"}
+    
+    processor = get_video_processor()
+    info = processor.get_video_info(video_path)
+    return info
+
+
+@app.post("/video/thumbnail")
+def create_video_thumbnail(video_path: str, time_offset: float = 1.0):
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"success": False, "error": "Animation features not available"}
+    
+    processor = get_video_processor()
+    success, result = processor.create_thumbnail(video_path, time_offset)
+    
+    if success:
+        return {"success": True, "thumbnail_path": result}
+    else:
+        return {"success": False, "error": result}
+
+
+@app.get("/video/formats")
+def get_supported_formats():
+    if not ANIMATION_FEATURES_AVAILABLE:
+        return {"formats": ["mp4"], "error": "Animation features not available"}
+    
+    processor = get_video_processor()
+    return {
+        "formats": processor.get_supported_formats(),
+        "ffmpeg_available": processor.ffmpeg_available
+    }
 
 
 # Run the server
