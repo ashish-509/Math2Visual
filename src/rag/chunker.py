@@ -3,6 +3,7 @@
 import re
 from typing import List, Dict
 
+
 class DocumentChunker:
     def __init__(self, chunk_size=800, overlap=150):
         # chunk_size: max chars per chunk

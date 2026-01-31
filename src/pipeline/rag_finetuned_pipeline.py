@@ -129,27 +129,11 @@ class RAGWithFinetunedModel:
         """
         Build the final prompt that combines user request with RAG context.
         """
+        # Layout rules to prevent text overlap
         layout_rules = """
-CRITICAL LAYOUT RULES TO PREVENT TEXT OVERLAP AND OVERFLOW:
-
-1. TEXT SIZING (MANDATORY):
-   - Title: .scale(0.6) at top with .to_edge(UP, buff=0.3)
-   - Main text: .scale(0.5) MAXIMUM
-   - Math equations: .scale(0.6) for main, .scale(0.4) for secondary
-   - Labels: .scale(0.4)
-
-2. LINE LENGTH: Max 40 characters per line. Use "\\n" for longer text.
-
-3. FRAME BOUNDARIES (safe zone):
-   - Horizontal: -6 to +6
-   - Vertical: -3.5 to +3.5
-   
-4. PREVENT OVERLAP: ALWAYS FadeOut previous content BEFORE showing new content.
-
-5. PATTERN:
-   self.play(FadeOut(old_content))  # Remove old first
-   new_content = Text("...").scale(0.5)  # Create scaled
-   self.play(Write(new_content))  # Show new
+LAYOUT RULES: Scale text (.scale(0.45) title, .scale(0.32) body). 
+Max 35 chars/line. FadeOut old content before showing new. 
+Safe zone: x[-5.5,5.5] y[-3.2,3.2]. End with FadeOut all.
 """
         
         if not context:
