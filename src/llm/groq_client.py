@@ -74,114 +74,22 @@ class GroqClient:
 5. Generate COMPLETE code - never truncate or use "..." or comments like "continue..."
 
 ======================================================================================
-                           SCREEN BOUNDARIES (CRITICAL)
+                           LAYOUT RULES (PREVENT OVERLAP)
 ======================================================================================
 
-The Manim frame is 14.2 units wide (-7.1 to +7.1) and 8 units tall (-4 to +4).
-Content OUTSIDE these bounds is INVISIBLE and gets CUT OFF.
+SAFE ZONE: x=[-5.5, 5.5], y=[-3.2, 3.2] - content outside gets cut off
 
-*** MANDATORY SAFE ZONE - ALL CONTENT MUST STAY WITHIN: ***
-- Horizontal: -5.5 to +5.5 (leave 1.6 unit margins)
-- Vertical: -3.2 to +3.2 (leave 0.8 unit margins)
-- NEVER place anything at coordinates beyond these limits
+TEXT SIZING:
+- Title: .scale(0.45).to_edge(UP)
+- Body: .scale(0.32)
+- Math: .scale(0.5)
+- Labels: .scale(0.22)
+- Max 35 chars per line, use \\n to break
 
-======================================================================================
-                        TEXT SIZING (STRICTLY ENFORCED)
-======================================================================================
+PREVENT OVERLAP: Always FadeOut old content before showing new content.
+Max 3 elements visible at once.
 
-Text that is too large WILL overflow and get cut off. Use these MAXIMUM scales:
-
-| Element Type      | MAX Scale | Example                                    |
-|-------------------|-----------|-------------------------------------------|
-| Title             | 0.45      | Text("Title").scale(0.45).to_edge(UP)     |
-| Body text         | 0.32      | Text("Content").scale(0.32)               |
-| Math equations    | 0.5       | MathTex(r"x^2").scale(0.5)                |
-| Labels on graphs  | 0.22      | Text("label").scale(0.22)                 |
-| Point annotations | 0.18      | MathTex("(1,2)").scale(0.18)              |
-
-*** LINE BREAKING RULES: ***
-- Maximum 35 characters per line
-- Split longer text with \\n (double backslash in the string)
-- Example: Text("This is a long sentence that\\nmust be split into two lines").scale(0.32)
-
-======================================================================================
-                      PREVENTING OVERLAP (MANDATORY PATTERN)
-======================================================================================
-
-*** THE GOLDEN RULE: FADEOUT BEFORE SHOWING NEW CONTENT ***
-
-WRONG (causes overlap):
-    self.play(Write(text1))
-    self.play(Write(text2))  # text1 is still visible!
-
-CORRECT:
-    self.play(Write(text1))
-    self.wait(1)
-    self.play(FadeOut(text1))  # Remove text1 FIRST
-    self.play(Write(text2))    # Then show text2
-
-*** MAXIMUM SIMULTANEOUS ELEMENTS: 3 ***
-Never have more than 3 visible objects at once. If you need to show more:
-1. Group related items into a VGroup
-2. FadeOut the VGroup before showing new content
-
-*** POSITIONING TEMPLATE: ***
-    # Title at top
-    title = Text("Title").scale(0.45).to_edge(UP, buff=0.4)
-    
-    # Main content in center
-    content = Text("Main content").scale(0.32).move_to(ORIGIN)
-    
-    # Or position below title
-    content = Text("Content").scale(0.32).next_to(title, DOWN, buff=0.5)
-
-======================================================================================
-                            GRAPHS AND PLOTS
-======================================================================================
-
-*** USE Axes WITH .plot() - NEVER USE Graph() FOR FUNCTIONS ***
-
-Graph() is for network graphs (nodes/edges), NOT mathematical functions.
-
-CORRECT pattern for function plots:
-    # Small axes that fit in safe zone
-    axes = Axes(
-        x_range=[-3, 3, 1],
-        y_range=[-2, 2, 1],
-        x_length=5,      # Keep width ≤ 6
-        y_length=3,      # Keep height ≤ 4
-        axis_config={"include_tip": False, "include_numbers": False}
-    )
-    axes.scale(0.7).move_to(DOWN * 0.3)  # Center-low position
-    
-    # Plot the function
-    graph = axes.plot(lambda x: x**2, color=BLUE)
-    
-    self.play(Create(axes))
-    self.play(Create(graph))
-
-*** LABELS ON GRAPHS: ***
-    # Tiny labels, positioned OUTSIDE the graph
-    label = Text("y = x²").scale(0.22).next_to(axes, UP, buff=0.2)
-    
-    # Point labels - very small, offset from point
-    dot = Dot(axes.c2p(1, 1), color=RED, radius=0.05)
-    point_label = MathTex("(1,1)").scale(0.18).next_to(dot, UR, buff=0.05)
-
-======================================================================================
-                          ANIMATION TIMING (FOR SYNC)
-======================================================================================
-
-*** TOTAL ANIMATION LENGTH: 20-40 seconds ***
-
-Timing guidelines:
-- self.wait(1) after each element appears (reading time)
-- self.wait(1.5) after equations or complex content
-- self.wait(2) at the end before final fadeout
-- Total self.wait() times should sum to 15-25 seconds
-- Animation self.play() calls typically take 1-2 seconds each
-
-*** ALWAYS END WITH: ***
+ALWAYS END WITH:
     self.wait(2)
     self.play(*[FadeOut(mob) for mob in self.mobjects])
 
@@ -289,16 +197,7 @@ Now generate the complete Manim code. Output ONLY the Python code, starting with
             return f"# Error generating code: {str(e)}"
     
     def generate_narration(self, prompt, max_tokens=1024, temperature=0.8):
-        """
-        Generate teaching narration script using Groq API.
-        This is SEPARATE from code generation - outputs spoken text only.
-        
-        prompt: The teaching prompt with topic and timing info
-        max_tokens: Maximum tokens to generate
-        temperature: Sampling temperature (0-1)
-        
-        Returns: Generated narration text as string
-        """
+       
         try:
             # System prompt specifically for narration (NOT code)
             system_prompt = """You are a math teacher creating a voiceover script for an educational animation video.
