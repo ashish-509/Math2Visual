@@ -18,3 +18,7 @@ manim
 fastapi
 uvicorn
 ffmpeg
+sentence-transformers
+chromadb
+faiss-cpu
+tiktoken
