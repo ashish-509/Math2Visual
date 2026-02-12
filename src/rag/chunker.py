@@ -1,284 +1,173 @@
 """
-Enhanced document chunking with semantic-aware splitting.
-Preserves code blocks, headers, and semantic boundaries for better retrieval.
+Document chunker for RAG. Splits text into smaller pieces while trying to
+preserve semantic boundaries (headers, paragraphs, code blocks).
 """
 
 import re
-from typing import List, Dict, Optional
 
 
 class SemanticChunker:
+    """Chunks documents while preserving structure."""
     
-    def __init__(
-        self,
-        chunk_size: int = 600,
-        chunk_overlap: int = 100,
-        preserve_code_blocks: bool = True,
-        min_chunk_size: int = 100
-    ):                      
+    def __init__(self, chunk_size=600, overlap=100, min_size=100):
         self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.preserve_code_blocks = preserve_code_blocks
-        self.min_chunk_size = min_chunk_size
+        self.overlap = overlap
+        self.min_size = min_size
     
-
-    def chunk_document(
-        self,
-        content: str,
-        metadata: Optional[Dict] = None
-    ) -> List[Dict]:
-       
+    def chunk_document(self, content, metadata=None):
+        """Split a document into chunks."""
         if not content or not content.strip():
             return []
         
-        # Split by markdown structure (headers + code blocks)
         sections = self._split_by_structure(content)
         
-        # Further split large sections
         chunks = []
-        for section in sections:
-            if len(section['text']) > self.chunk_size:
-                sub_chunks = self._split_large_section(section)
-                chunks.extend(sub_chunks)
-            elif len(section['text']) >= self.min_chunk_size:
-                chunks.append(section)
+        for sec in sections:
+            if len(sec['text']) > self.chunk_size:
+                chunks.extend(self._split_section(sec))
+            elif len(sec['text']) >= self.min_size:
+                chunks.append(sec)
         
-        # Add metadata and numbering
-        for i, chunk in enumerate(chunks):
-            chunk['metadata'] = {
-                **(metadata or {}),
-                'chunk_id': i,
-                'total_chunks': len(chunks),
-                'size': len(chunk['text'])
-            }
+        # Add metadata
+        for i, c in enumerate(chunks):
+            c['metadata'] = {**(metadata or {}), 'chunk_id': i, 'total': len(chunks), 'size': len(c['text'])}
         
         return chunks
-
     
-    def _split_by_structure(self, text: str) -> List[Dict]:
-        
-        sections = []
-        
-        # Regex patterns
-        header_pattern = r'^(#{1,6})\s+(.+)$'
-        code_block_pattern = r'```[\s\S]*?```'
-        
-        # Extract code blocks first to protect them
+    def _split_by_structure(self, text):
+        """Split text by headers, protecting code blocks."""
+        # Extract and protect code blocks
         code_blocks = []
-        def store_code_block(match):
-            idx = len(code_blocks)
-            code_blocks.append(match.group(0))
-            return f"__CODE_BLOCK_{idx}__"
+        def save_code(m):
+            code_blocks.append(m.group(0))
+            return f"__CB_{len(code_blocks)-1}__"
         
-        if self.preserve_code_blocks:
-            text = re.sub(code_block_pattern, store_code_block, text, flags=re.MULTILINE)
+        text = re.sub(r'```[\s\S]*?```', save_code, text)
         
         # Split by headers
-        lines = text.split('\n')
-        current_section = ""
+        sections = []
+        current_text = ""
         current_header = "Introduction"
         
-        for line in lines:
-            header_match = re.match(header_pattern, line)
-            
+        for line in text.split('\n'):
+            header_match = re.match(r'^(#{1,6})\s+(.+)$', line)
             if header_match:
-                # Save previous section
-                if current_section.strip():
-                    # Restore code blocks
-                    restored = self._restore_code_blocks(current_section, code_blocks)
-                    sections.append({
-                        'text': restored.strip(),
-                        'header': current_header,
-                        'size': len(restored)
-                    })
+                # Save previous
+                if current_text.strip():
+                    restored = self._restore_code(current_text, code_blocks)
+                    sections.append({'text': restored.strip(), 'header': current_header})
                 
-                # Start new section
-                level = len(header_match.group(1))
                 current_header = header_match.group(2).strip()
-                current_section = line + '\n'
+                current_text = line + '\n'
             else:
-                current_section += line + '\n'
+                current_text += line + '\n'
         
-        # Last section
-        if current_section.strip():
-            restored = self._restore_code_blocks(current_section, code_blocks)
-            sections.append({
-                'text': restored.strip(),
-                'header': current_header,
-                'size': len(restored)
-            })
+        # Don't forget the last section
+        if current_text.strip():
+            restored = self._restore_code(current_text, code_blocks)
+            sections.append({'text': restored.strip(), 'header': current_header})
         
-        return sections if sections else [{'text': text, 'header': 'Document', 'size': len(text)}]
+        return sections or [{'text': text, 'header': 'Document'}]
     
-
-    def _restore_code_blocks(self, text: str, code_blocks: List[str]) -> str:
-        
-        for idx, code in enumerate(code_blocks):
-            text = text.replace(f"__CODE_BLOCK_{idx}__", code)
+    def _restore_code(self, text, blocks):
+        """Put code blocks back."""
+        for i, code in enumerate(blocks):
+            text = text.replace(f"__CB_{i}__", code)
         return text
     
-
-    def _split_large_section(self, section: Dict) -> List[Dict]:
-       
+    def _split_section(self, section):
+        """Split a large section into smaller chunks."""
         text = section['text']
         header = section['header']
         
-        # Try splitting by paragraphs first
         paragraphs = text.split('\n\n')
-        
         chunks = []
-        current_chunk = ""
+        current = ""
         
         for para in paragraphs:
-            # Check if adding this paragraph exceeds limit
-            if len(current_chunk) + len(para) + 2 <= self.chunk_size:
-                current_chunk += para + '\n\n'
+            if len(current) + len(para) + 2 <= self.chunk_size:
+                current += para + '\n\n'
             else:
-                # Save current chunk if it's substantial
-                if len(current_chunk) >= self.min_chunk_size:
-                    chunks.append({
-                        'text': current_chunk.strip(),
-                        'header': header,
-                        'size': len(current_chunk)
-                    })
-                    
-                    # Start new chunk with overlap
-                    overlap_text = self._get_overlap(current_chunk)
-                    current_chunk = overlap_text + para + '\n\n'
+                if len(current) >= self.min_size:
+                    chunks.append({'text': current.strip(), 'header': header})
+                    # Keep some overlap
+                    overlap = current[-self.overlap:] if len(current) > self.overlap else current
+                    current = overlap + para + '\n\n'
                 else:
-                    current_chunk += para + '\n\n'
+                    current += para + '\n\n'
         
-        # Last chunk
-        if current_chunk.strip() and len(current_chunk) >= self.min_chunk_size:
-            chunks.append({
-                'text': current_chunk.strip(),
-                'header': header,
-                'size': len(current_chunk)
-            })
+        if current.strip() and len(current) >= self.min_size:
+            chunks.append({'text': current.strip(), 'header': header})
         
-        # If no good split found, fall back to sentence splitting
+        # Fall back to sentence splitting if needed
         if not chunks:
             chunks = self._split_by_sentences(text, header)
         
-        return chunks if chunks else [section]
+        return chunks or [section]
     
-
-    def _split_by_sentences(self, text: str, header: str) -> List[Dict]:
-       
-        # Simple sentence boundary detection
-        sentence_pattern = r'[.!?]+\s+'
-        sentences = re.split(sentence_pattern, text)
-        
+    def _split_by_sentences(self, text, header):
+        """Last resort: split by sentences."""
+        sentences = re.split(r'[.!?]+\s+', text)
         chunks = []
-        current_chunk = ""
+        current = ""
         
         for sent in sentences:
-            if len(current_chunk) + len(sent) <= self.chunk_size:
-                current_chunk += sent + '. '
+            if len(current) + len(sent) <= self.chunk_size:
+                current += sent + '. '
             else:
-                if current_chunk.strip():
-                    chunks.append({
-                        'text': current_chunk.strip(),
-                        'header': header,
-                        'size': len(current_chunk)
-                    })
-                
-                overlap_text = self._get_overlap(current_chunk)
-                current_chunk = overlap_text + sent + '. '
+                if current.strip():
+                    chunks.append({'text': current.strip(), 'header': header})
+                current = sent + '. '
         
-        if current_chunk.strip():
-            chunks.append({
-                'text': current_chunk.strip(),
-                'header': header,
-                'size': len(current_chunk)
-            })
+        if current.strip():
+            chunks.append({'text': current.strip(), 'header': header})
         
         return chunks
     
-
-    def _get_overlap(self, text: str) -> str:
-        
-        if len(text) <= self.chunk_overlap:
-            return text
-        
-        # Try to break at sentence boundary
-        overlap_start = len(text) - self.chunk_overlap
-        overlap_text = text[overlap_start:]
-        
-        # Find first sentence start
-        sentence_start = re.search(r'[.!?]\s+', overlap_text)
-        if sentence_start:
-            overlap_text = overlap_text[sentence_start.end():]
-        
-        return overlap_text
-    
-    
-    def get_stats(self, chunks: List[Dict]) -> Dict:
-       
+    def get_stats(self, chunks):
+        """Get statistics about chunks."""
         if not chunks:
-            return {
-                'num_chunks': 0,
-                'total_chars': 0,
-                'avg_chunk_size': 0,
-                'min_size': 0,
-                'max_size': 0
-            }
+            return {'count': 0, 'total_chars': 0, 'avg_size': 0}
         
-        sizes = [c.get('size', len(c.get('text', ''))) for c in chunks]
-        
+        sizes = [len(c.get('text', '')) for c in chunks]
         return {
-            'num_chunks': len(chunks),
+            'count': len(chunks),
             'total_chars': sum(sizes),
-            'avg_chunk_size': int(sum(sizes) / len(sizes)),
-            'min_size': min(sizes),
-            'max_size': max(sizes)
+            'avg_size': sum(sizes) // len(sizes),
+            'min': min(sizes),
+            'max': max(sizes)
         }
 
 
-# Backward compatibility alias
+# Alias for backward compatibility
 class DocumentChunker(SemanticChunker):
-    
     def __init__(self, chunk_size=800, overlap=150):
-        super().__init__(
-            chunk_size=chunk_size,
-            chunk_overlap=overlap
-        )
+        super().__init__(chunk_size=chunk_size, overlap=overlap)
     
-
-    def chunk_by_section(self, text: str) -> List[Dict]:
-       
-        chunks = self.chunk_document(text)
-        # Convert to old format
-        return [{'text': c['text'], 'header': c['header'], 'size': c['size']} 
-                for c in chunks]
-
+    def chunk_by_section(self, text):
+        return self.chunk_document(text)
     
-    def chunk_simple(self, text: str) -> List[Dict]:
-       
+    def chunk_simple(self, text):
+        """Simple fixed-size chunking."""
         chunks = []
-        start = 0
-        text_len = len(text)
+        pos = 0
         
-        while start < text_len:
-            end = start + self.chunk_size
-            chunk_text = text[start:end]
+        while pos < len(text):
+            end = pos + self.chunk_size
+            chunk = text[pos:end]
             
-            # Try to break at sentence boundary
-            if end < text_len:
+            # Try to break at a good point
+            if end < len(text):
                 for sep in ['. ', '\n\n', '\n', ' ']:
-                    break_point = chunk_text.rfind(sep)
-                    if break_point > self.chunk_size * 0.7:
-                        end = start + break_point + len(sep)
-                        chunk_text = text[start:end]
+                    idx = chunk.rfind(sep)
+                    if idx > self.chunk_size * 0.7:
+                        chunk = text[pos:pos + idx + len(sep)]
+                        end = pos + idx + len(sep)
                         break
             
-            if chunk_text.strip():
-                chunks.append({
-                    'text': chunk_text.strip(),
-                    'header': f'Chunk {len(chunks) + 1}',
-                    'size': len(chunk_text)
-                })
+            if chunk.strip():
+                chunks.append({'text': chunk.strip(), 'header': f'Part {len(chunks)+1}'})
             
-            start = end - self.chunk_overlap
+            pos = end - self.overlap
         
         return chunks
