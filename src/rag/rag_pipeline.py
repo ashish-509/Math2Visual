@@ -1,40 +1,28 @@
 """
-Enhanced RAG pipeline with semantic retrieval using embeddings.
-Loads docs, chunks them intelligently, builds vector index, retrieves relevant context.
+RAG pipeline for Manim documentation. Loads docs, chunks them, builds a
+vector index, and retrieves relevant context for queries.
 """
 
 import os
 import logging
-from typing import Optional, List, Dict
 from .chunker import SemanticChunker, DocumentChunker
-from .retriever import SemanticRetriever, create_semantic_retriever, SEMANTIC_AVAILABLE
+from .retriever import SemanticRetriever, create_semantic_retriever, HAS_DEPS as SEMANTIC_AVAILABLE
 from .context_manager import ContextManager
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class SemanticRAGPipeline:
+    """RAG pipeline with semantic search capabilities."""
     
-    def __init__(
-        self, 
-        chunk_size: int = 600,
-        chunk_overlap: int = 100,
-        max_context_tokens: int = 2000,
-        top_k_chunks: int = 5,
-        model_name: Optional[str] = None,
-        use_reranker: bool = True,
-        min_score: float = 0.3
-    ):
+    def __init__(self, chunk_size=600, chunk_overlap=100, max_context_tokens=2000,
+                 top_k_chunks=5, model_name=None, use_reranker=True, min_score=0.3):
         
         if not SEMANTIC_AVAILABLE:
-            raise ImportError(
-                "Semantic search not available. "
-                "Install: pip install sentence-transformers faiss-cpu"
-            )
+            raise ImportError("Install: pip install sentence-transformers faiss-cpu")
         
         self.chunker = SemanticChunker(chunk_size, chunk_overlap)
-        self.retriever = None  # Initialized when documents loaded
+        self.retriever = None
         self.context_mgr = ContextManager(max_context_tokens)
         
         self.top_k = top_k_chunks
@@ -43,199 +31,94 @@ class SemanticRAGPipeline:
         self.use_reranker = use_reranker
         self.is_indexed = False
         
-        logger.info(f" Semantic RAG pipeline initialized")
-        logger.info(f"  Chunk size: {chunk_size}, Top-K: {top_k_chunks}")
-        logger.info(f"  Model: {model_name or 'auto-select'}")
+        logger.info(f"RAG pipeline initialized (chunk_size={chunk_size}, top_k={top_k_chunks})")
     
-
-    def load_and_index(self, doc_path: str, force_reindex: bool = False) -> bool:
-        
+    def load_and_index(self, doc_path, force_reindex=False):
+        """Load documentation and build the search index."""
         if not os.path.exists(doc_path):
-            logger.error(f"Documentation file not found: {doc_path}")
+            logger.error(f"File not found: {doc_path}")
             return False
-        
-        logger.info(f"Loading documentation from {doc_path}")
         
         try:
-            # Load document
             with open(doc_path, 'r', encoding='utf-8') as f:
-                doc_text = f.read()
+                text = f.read()
             
-            logger.info(f"Loaded {len(doc_text):,} characters")
+            logger.info(f"Loaded {len(text):,} chars from {os.path.basename(doc_path)}")
             
             # Chunk the document
-            logger.info("Chunking document...")
-            chunks = self.chunker.chunk_document(
-                doc_text,
-                metadata={'source': os.path.basename(doc_path)}
-            )
-            
+            chunks = self.chunker.chunk_document(text, {'source': os.path.basename(doc_path)})
             stats = self.chunker.get_stats(chunks)
-            logger.info(f" Created {stats['num_chunks']} chunks")
-            logger.info(f"  Avg size: {stats['avg_chunk_size']} chars")
-            logger.info(f"  Range: {stats['min_size']}-{stats['max_size']} chars")
+            logger.info(f"Created {stats['count']} chunks (avg {stats['avg_size']} chars)")
             
-            # Initialize semantic retriever
-            logger.info("Initializing semantic retriever...")
+            # Build index
             self.retriever = create_semantic_retriever(
-                model_name=self.model_name,
-                use_reranker=self.use_reranker
+                model_name=self.model_name, use_reranker=self.use_reranker
             )
             
-            # Index documents
-            logger.info("Building semantic index (this may take a moment)...")
-            success = self.retriever.index_documents(
-                chunks,
-                force_reindex=force_reindex,
-                show_progress=True
-            )
-            
-            if success:
+            if self.retriever.index_documents(chunks, force=force_reindex):
                 self.is_indexed = True
-                logger.info(" RAG pipeline ready!")
+                logger.info("Index ready")
                 return True
-            else:
-                logger.error("Failed to index documents")
-                return False
+            
+            return False
             
         except Exception as e:
-            logger.error(f"Failed to load/index docs: {e}", exc_info=True)
+            logger.error(f"Indexing failed: {e}")
             return False
-
     
-    def retrieve_context(
-        self, 
-        query: str,
-        top_k: Optional[int] = None,
-        min_score: Optional[float] = None
-    ) -> str:
-        
-        
+    def retrieve_context(self, query, top_k=None, min_score=None):
+        """Get relevant context for a query as formatted string."""
         if not self.is_indexed or not self.retriever:
-            logger.warning("RAG not indexed - no context available")
             return ""
         
-        top_k = top_k or self.top_k
-        min_score = min_score or self.min_score
-        
-        # Retrieve with semantic search
-        results = self.retriever.retrieve(query, top_k, min_score)
+        results = self.retriever.retrieve(query, top_k or self.top_k, min_score or self.min_score)
         
         if not results:
-            logger.warning(f"No relevant docs found for: '{query[:50]}...'")
             return ""
         
-        # Log retrieval info
-        scores = [r.get('score', 0) for r in results]
-        logger.info(f" Retrieved {len(results)} chunks")
-        logger.info(f"  Scores: {['%.3f' % s for s in scores]}")
+        # Format for context manager
+        formatted = [
+            {'chunk': {'text': r.get('text', ''), 'header': r.get('header', ''), 'size': len(r.get('text', ''))},
+             'score': r.get('score', 0), 'rank': i + 1}
+            for i, r in enumerate(results)
+        ]
         
-        # Format results for old context manager compatibility
-        formatted_results = []
-        for i, doc in enumerate(results):
-            formatted_results.append({
-                'chunk': {
-                    'text': doc.get('text', doc.get('content', '')),
-                    'header': doc.get('header', 'Unknown'),
-                    'size': doc.get('size', 0)
-                },
-                'score': doc.get('score', 0),
-                'rank': i + 1
-            })
-        
-        # Build context string
-        context = self.context_mgr.build_context(formatted_results)
-        token_est = self.context_mgr.estimate_tokens(context)
-        
-        logger.info(f"  Context: ~{token_est} tokens")
-        
-        return context
+        return self.context_mgr.build_context(formatted)
     
-
-    def retrieve_raw(
-        self,
-        query: str,
-        top_k: Optional[int] = None,
-        min_score: Optional[float] = None
-    ) -> List[Dict]:
-        
-        
+    def retrieve_raw(self, query, top_k=None, min_score=None):
+        """Get raw results (dicts with text, score, etc)."""
         if not self.is_indexed or not self.retriever:
             return []
-        
-        top_k = top_k or self.top_k
-        min_score = min_score or self.min_score
-        
-        return self.retriever.retrieve(query, top_k, min_score)
+        return self.retriever.retrieve(query, top_k or self.top_k, min_score or self.min_score)
     
-
-    def augment_prompt(
-        self, 
-        user_query: str, 
-        base_prompt: str = "", 
-        max_total_tokens: int = 4000
-    ) -> str:
-        
-        context = self.retrieve_context(user_query)
-        augmented = self.context_mgr.build_rag_prompt(
-            user_query, 
-            context, 
-            base_prompt, 
-            max_total_tokens
-        )
-        
-        return augmented
-
+    def augment_prompt(self, query, base_prompt="", max_tokens=4000):
+        """Add retrieved context to a prompt."""
+        context = self.retrieve_context(query)
+        return self.context_mgr.build_rag_prompt(query, context, base_prompt, max_tokens)
     
-    def get_stats(self) -> Dict:
-        if not self.is_indexed or not self.retriever:
+    def get_stats(self):
+        if not self.is_indexed:
             return {"status": "not indexed"}
         
-        retriever_status = self.retriever.get_status()
-        
+        s = self.retriever.get_status()
         return {
             "status": "ready",
-            "model": retriever_status.get('model', 'unknown'),
-            "embedding_dim": retriever_status.get('embedding_dim', 0),
-            "num_documents": retriever_status.get('num_documents', 0),
-            "reranker_enabled": retriever_status.get('reranker', False),
-            "top_k": self.top_k,
-            "min_score": self.min_score,
-            "max_context_tokens": self.context_mgr.max_tokens
+            "model": s.get('model'),
+            "docs": s.get('docs', 0),
+            "reranker": s.get('reranker', False),
+            "top_k": self.top_k
         }
-    
-
-    def search_similar_docs(self, doc_index: int, top_k: int = 5) -> List[Dict]:
-        if not self.is_indexed or not self.retriever:
-            return []
-        
-        return self.retriever.search_similar(doc_index, top_k)
 
 
-# Backward compatible class
+# Backward compatible alias
 class RAGPipeline(SemanticRAGPipeline):
-    
-    def __init__(
-        self,
-        chunk_size=800,
-        chunk_overlap=150,
-        max_context_tokens=2000,
-        top_k_chunks=3
-    ):
-        # Check if semantic search is available
+    def __init__(self, chunk_size=800, chunk_overlap=150, max_context_tokens=2000, top_k_chunks=3):
         if SEMANTIC_AVAILABLE:
-            logger.info("Using enhanced semantic RAG")
-            super().__init__(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                max_context_tokens=max_context_tokens,
-                top_k_chunks=top_k_chunks
-            )
+            super().__init__(chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                           max_context_tokens=max_context_tokens, top_k_chunks=top_k_chunks)
         else:
-            # Fallback to old implementation
-            logger.warning("Semantic search not available, using basic TF-IDF")
+            # Basic fallback
             from .retriever import SimpleRetriever
-            
             self.chunker = DocumentChunker(chunk_size, chunk_overlap)
             self.retriever = SimpleRetriever()
             self.context_mgr = ContextManager(max_context_tokens)
@@ -243,29 +126,35 @@ class RAGPipeline(SemanticRAGPipeline):
             self.is_indexed = False
 
 
-def create_rag_pipeline(
-    doc_path: Optional[str] = None,
-    **kwargs
-) -> SemanticRAGPipeline:
+def create_rag_pipeline(doc_path=None, auto_sync=False, **kwargs):
+    """Factory function to create and optionally initialize a RAG pipeline."""
     
-    # Auto-detect doc path if not provided
-    if doc_path is None:
-        doc_path = os.path.join(
-            os.path.dirname(__file__), 
-            '..', '..', 
-            'crawler', 
-            'markdown_output.md'
-        )
+    # Try auto-sync if requested
+    if auto_sync:
+        try:
+            from crawler.docs_sync import get_docs_sync
+            sync = get_docs_sync()
+            if sync.check_for_updates():
+                logger.info("Syncing documentation...")
+                success, msg = sync.sync_docs()
+                logger.info(f"Sync {'done' if success else 'failed'}: {msg}")
+        except Exception as e:
+            logger.warning(f"Auto-sync skipped: {e}")
+    
+    # Find doc path
+    if not doc_path:
+        base = os.path.dirname(__file__)
+        synced = os.path.join(base, '..', '..', 'crawler', 'docs_output', 'manim_docs_combined.md')
+        legacy = os.path.join(base, '..', '..', 'crawler', 'markdown_output.md')
+        
+        doc_path = synced if os.path.exists(synced) else legacy
     
     # Create pipeline
     rag = SemanticRAGPipeline(**kwargs)
     
-    # Try to load and index
     if os.path.exists(doc_path):
-        logger.info(f"Auto-loading documentation: {doc_path}")
         rag.load_and_index(doc_path)
     else:
-        logger.warning(f"Doc file not found: {doc_path}")
-        logger.warning("RAG will work without documentation context")
+        logger.warning(f"No docs at {doc_path}")
     
     return rag
