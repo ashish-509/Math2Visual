@@ -82,6 +82,14 @@ except ImportError as e:
     ANIMATION_FEATURES_AVAILABLE = False
     logger.warning(f"Animation features not available: {e}")
 
+# Documentation sync (for fetching latest Manim docs from GitHub)
+try:
+    from crawler.docs_sync import get_docs_sync, sync_manim_docs
+    DOCS_SYNC_AVAILABLE = True
+except ImportError as e:
+    DOCS_SYNC_AVAILABLE = False
+    logger.warning(f"Docs sync not available: {e}")
+
 
 # Create FastAPI app
 
@@ -162,6 +170,16 @@ class MergeVideoAudioResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     models: dict
+
+
+# Docs sync response
+class DocsSyncResponse(BaseModel):
+    success: bool
+    message: str
+    last_sync: Optional[str] = None
+    last_commit: Optional[str] = None
+    files_synced: int = 0
+    update_available: bool = False
 
 
 # Chatbot Request/Response Models
@@ -1660,6 +1678,70 @@ def get_supported_formats():
         "formats": processor.get_supported_formats(),
         "ffmpeg_available": processor.ffmpeg_available
     }
+
+                                              
+# Documentation Sync Endpoints
+
+@app.post("/docs/refresh", response_model=DocsSyncResponse)
+def refresh_documentation(force: bool = False):
+    """Sync documentation from GitHub."""
+    if not DOCS_SYNC_AVAILABLE:
+        return DocsSyncResponse(success=False, message="Docs sync not available")
+    
+    try:
+        success, msg = sync_manim_docs(force=force)
+        status = get_docs_sync().get_status()
+        
+        if success:
+            global _rag_pipeline_cache
+            _rag_pipeline_cache = None
+        
+        return DocsSyncResponse(
+            success=success, message=msg,
+            last_sync=status.get("last_sync"),
+            last_commit=status.get("last_commit"),
+            files_synced=status.get("files_synced", 0),
+            update_available=status.get("update_available", False)
+        )
+    except Exception as e:
+        return DocsSyncResponse(success=False, message=str(e))
+
+
+@app.get("/docs/status", response_model=DocsSyncResponse)
+def get_docs_status():
+    """Get documentation sync status."""
+    if not DOCS_SYNC_AVAILABLE:
+        return DocsSyncResponse(success=False, message="Docs sync not available")
+    
+    try:
+        status = get_docs_sync().get_status()
+        return DocsSyncResponse(
+            success=True, message="OK",
+            last_sync=status.get("last_sync"),
+            last_commit=status.get("last_commit"),
+            files_synced=status.get("files_synced", 0),
+            update_available=status.get("update_available", False)
+        )
+    except Exception as e:
+        return DocsSyncResponse(success=False, message=str(e))
+
+
+@app.get("/docs/check_update")
+def check_docs_update():
+    """Check if new docs are available."""
+    if not DOCS_SYNC_AVAILABLE:
+        return {"update_available": False, "error": "Not available"}
+    
+    try:
+        sync = get_docs_sync()
+        has_update = sync.check_for_updates()
+        return {
+            "update_available": has_update,
+            "last_commit": sync.metadata.get("last_commit"),
+            "message": "Update available" if has_update else "Up to date"
+        }
+    except Exception as e:
+        return {"update_available": False, "error": str(e)}
 
 
 # Run the server
