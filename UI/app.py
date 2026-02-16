@@ -107,6 +107,37 @@ def compile_video_api(code, quality):
         return False, f"Connection error: {str(e)}"
 
 
+def smart_generate_api(prompt, model_choice, quality="medium", max_retries=3):
+
+    # This uses the error feedback loop - if compilation fails, the error is sent back to the LLM to regenerate corrected code automatically.
+   
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/smart_generate",
+            json={
+                "prompt": prompt,
+                "model_choice": model_choice,
+                "quality": quality,
+                "max_retries": max_retries
+            },
+            timeout=900  # Allow more time for retries
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                return True, data.get("video_path"), data.get("code", "")
+            else:
+                return False, data.get("message", "Unknown error"), data.get("code", "")
+        else:
+            return False, f"Backend error: {response.status_code}", ""
+            
+    except requests.exceptions.Timeout:
+        return False, "Request timed out. The generation may still be running.", ""
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}", ""
+
+
 def generate_teaching_script_api(description, code, model_choice, video_duration=0.0):
     """Call backend API to generate teaching script matched to video duration."""
     try:
