@@ -196,6 +196,22 @@ class ChatbotResponse(BaseModel):
     message: str = ""
 
 
+# Smart Generation with Retry - Request/Response Models
+class SmartGenerateRequest(BaseModel):
+    prompt: str
+    model_choice: str = "CodeLlama-34B"
+    quality: str = "medium"
+    max_retries: int = 3
+
+
+class SmartGenerateResponse(BaseModel):
+    success: bool
+    video_path: Optional[str] = None
+    code: str = ""
+    attempts: int = 0
+    message: str = ""
+
+
 # Cached Resources (singleton pattern)
 
 # Cache for pipeline instances
@@ -939,6 +955,129 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
             pass
 
 
+def generate_and_compile_with_retry(prompt: str, model_choice: str, quality: str = "medium", 
+                                    max_retries: int = 3) -> tuple:
+    # Generate Manim code and compile it to video, with automatic retry on errors.
+
+    # Get RAG context once (we'll reuse it for retries)
+    context = ""
+    if RAG_AVAILABLE:
+        rag = get_rag_pipeline_cached()
+        if rag and rag.is_indexed:
+            context = rag.retrieve_context(prompt)
+    
+    # Track attempts for logging
+    attempt = 0
+    last_error = ""
+    current_code = ""
+    
+    while attempt < max_retries:
+        attempt += 1
+        logger.info(f"Attempt {attempt}/{max_retries} for prompt: {prompt[:50]}...")
+        
+        # Step 1: Generate code (or regenerate with error feedback)
+        if attempt == 1:
+            # First attempt: normal generation
+            success, current_code = generate_code_with_model(prompt, model_choice)
+        else:
+            # Retry: regenerate using previous error as feedback
+            success, current_code = regenerate_code_with_error(
+                prompt, model_choice, context, last_error
+            )
+        
+        if not success:
+            logger.warning(f"Code generation failed on attempt {attempt}: {current_code}")
+            last_error = current_code
+            continue
+        
+        # Step 2: Try to compile the code
+        compile_success, compile_result = compile_video(current_code, quality)
+        
+        if compile_success:
+            # Success! Return the video path and final code
+            logger.info(f"Successfully compiled on attempt {attempt}")
+            return True, compile_result, current_code
+        
+        # Compilation failed - save the error for feedback
+        last_error = compile_result
+        logger.warning(f"Compilation failed on attempt {attempt}: {last_error[:200]}...")
+    
+    # All retries exhausted
+    error_msg = f"Failed after {max_retries} attempts. Last error: {last_error}"
+    logger.error(error_msg)
+    return False, error_msg, current_code
+
+
+def regenerate_code_with_error(original_prompt: str, model_choice: str, 
+                               context: str, error_message: str) -> tuple:
+    # Regenerate code using the error from a failed compilation attempt.
+
+    logger.info("Regenerating code with error feedback...")
+    
+    # Use Groq client for regeneration
+    if model_choice in ["CodeLlama-34B", "Phi-2"]:
+        if not GROQ_AVAILABLE:
+            return False, "Groq client not available for regeneration"
+        
+        try:
+            model_type = "codellama" if model_choice == "CodeLlama-34B" else "phi2"
+            groq_client = get_groq_client_cached(model_type)
+            
+            if groq_client is None:
+                return False, "Failed to get Groq client"
+            
+            # Call the regenerate method with error feedback
+            code = groq_client.regenerate_with_error(
+                original_prompt=original_prompt,
+                context=context,
+                error_message=error_message,
+                max_tokens=2048,
+                temperature=0.5  # Lower temperature for more focused correction
+            )
+            
+            # Validate and fix the regenerated code
+            is_valid, fixed_code, validation_error = validate_and_fix_manim_code(code)
+            
+            if not is_valid:
+                return False, f"Regenerated code validation failed: {validation_error}"
+            
+            return True, fixed_code
+            
+        except Exception as e:
+            return False, f"Error during regeneration: {str(e)}"
+    
+    # For finetuned model, use a combined prompt approach
+    elif model_choice == "Mistral-7B (Finetuned)":
+        if not RAG_FINETUNED_AVAILABLE:
+            return False, "Finetuned model not available"
+        
+        try:
+            pipeline = get_rag_finetuned_cached()
+            if pipeline is None:
+                return False, "Could not get finetuned pipeline"
+            
+            # Build error feedback prompt
+            error_prompt = f"""{original_prompt}
+
+IMPORTANT: The previous attempt failed with this error:
+{error_message}
+
+Please generate corrected code that fixes this error."""
+            
+            code = pipeline.generate_manim_code(error_prompt, use_rag=True)
+            
+            is_valid, fixed_code, validation_error = validate_and_fix_manim_code(code)
+            if not is_valid:
+                return False, f"Regenerated code validation failed: {validation_error}"
+            
+            return True, fixed_code
+            
+        except Exception as e:
+            return False, f"Error during finetuned regeneration: {str(e)}"
+    
+    return False, f"Unknown model for regeneration: {model_choice}"
+
+
 def generate_teaching_script_text(description: str, code: str, model_choice: str, video_duration: float = 0.0) -> tuple:
     if not description or not description.strip():
         return False, "Please provide a description first"
@@ -1285,6 +1424,38 @@ def compile_video_endpoint(request: VideoCompilationRequest):
         return VideoCompilationResponse(success=True, video_path=result)
     else:
         return VideoCompilationResponse(success=False, error_message=result)
+
+
+@app.post("/smart_generate", response_model=SmartGenerateResponse)
+def smart_generate_endpoint(request: SmartGenerateRequest):
+    # If compilation fails, it automatically retries by sending the error back to the LLM for correction.
+
+    logger.info(f"Smart generate request: model={request.model_choice}, retries={request.max_retries}")
+    
+    # Validate max_retries (keep it reasonable)
+    max_retries = min(max(1, request.max_retries), 5)
+    
+    success, result, final_code = generate_and_compile_with_retry(
+        prompt=request.prompt,
+        model_choice=request.model_choice,
+        quality=request.quality,
+        max_retries=max_retries
+    )
+    
+    if success:
+        return SmartGenerateResponse(
+            success=True,
+            video_path=result,
+            code=final_code,
+            attempts=max_retries,  # Will be refined in future to track actual attempts
+            message="Video generated successfully"
+        )
+    else:
+        return SmartGenerateResponse(
+            success=False,
+            code=final_code,
+            message=result
+        )
 
 
 @app.get("/video/{filename}")
