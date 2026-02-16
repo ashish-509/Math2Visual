@@ -637,6 +637,66 @@ class GeneratedScene(Scene):
                 # Return original code with error comment
                 return f"# WARNING: Code may have syntax errors - please review\n# Error: {e}\n\n{code}"
     
+    def regenerate_with_error(self, original_prompt, context, error_message, 
+                               max_tokens=2048, temperature=0.5):
+        # Regenerate code using feedback from a previous error.
+        
+        try:
+            # Build a focused prompt that includes the error for correction
+            error_feedback_prompt = f"""The previously generated Manim code failed with this error:
+
+=== ERROR MESSAGE ===
+{error_message}
+=== END ERROR ===
+
+Original request: {original_prompt}
+
+{f"Reference documentation:{chr(10)}{context}" if context else ""}
+
+Please generate CORRECTED Manim code that fixes this error. 
+Pay careful attention to:
+1. The specific error message above
+2. Correct Manim syntax and API usage
+3. Proper Python indentation and structure
+
+Generate complete, working code that avoids this error."""
+
+            logger.info("Regenerating code with error feedback...")
+            
+            # Call the API with focused prompt
+            chat_completion = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """You are fixing Manim code that had an error.
+Focus on:
+1. Understanding the exact error
+2. Writing correct code that avoids this error
+3. Using proper Manim Community Edition syntax
+
+Output ONLY the corrected Python code, starting with 'from manim import *'."""
+                    },
+                    {
+                        "role": "user",
+                        "content": error_feedback_prompt
+                    }
+                ],
+                model=self.model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=0.9
+            )
+            
+            code = chat_completion.choices[0].message.content
+            code = self._clean_code(code)
+            
+            logger.info("Code regeneration with error feedback complete")
+            return code
+            
+        except Exception as e:
+            logger.error(f"Error during regeneration: {e}")
+            return f"# Error regenerating code: {str(e)}"
+
     def get_status(self):
         """
         Get the current status of the Groq client.
