@@ -212,6 +212,23 @@ class SmartGenerateResponse(BaseModel):
     message: str = ""
 
 
+# Error-feedback regeneration — Request/Response Models
+class RegenerateAndCompileRequest(BaseModel):
+    prompt: str                        
+    current_code: str                 
+    error_message: str              
+    model_choice: str = "CodeLlama-34B" 
+    quality: str = "medium"            
+    max_retries: int = 2               
+
+
+class RegenerateAndCompileResponse(BaseModel):
+    success: bool
+    video_path: Optional[str] = None 
+    code: str = ""                    # The final (fixed) code that was compiled
+    message: str = ""                 # Human-readable result summary
+
+
 # Cached Resources (singleton pattern)
 
 # Cache for pipeline instances
@@ -300,6 +317,7 @@ def get_groq_client_cached(model_type: str):
 # Helper Functions
 
 def extract_class_name(code: str) -> Optional[str]:
+
     pattern = r'class\s+(\w+)\s*\(.*Scene.*\)'
     matches = re.findall(pattern, code)
     if matches:
@@ -440,6 +458,164 @@ def clean_text_for_tts(text: str) -> str:
     result = re.sub(r'\s+', ' ', result)  # Normalize whitespace again
     
     return result.strip()
+
+
+def check_latex_available() -> bool:
+    """Check if LaTeX (pdflatex / latex) is installed and accessible on the system."""
+    for latex_cmd in ["latex", "pdflatex", "xelatex"]:
+        try:
+            result = subprocess.run(
+                [latex_cmd, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return False
+
+
+def convert_mathtex_to_text(code: str) -> str:
+    """
+    Automatically convert MathTex() and Tex() calls into plain Text() calls.
+
+    This is a fallback when LaTeX is NOT installed on the system.
+    It strips LaTeX markup and converts it to readable plain text so the
+    animation can still render without needing a LaTeX installation.
+    """
+    if not code:
+        return code
+
+    def clean_latex_string(s: str) -> str:
+        # Strip LaTeX commands and return a readable plain-text equivalent.
+        
+        # Remove raw string prefix characters that might appear in the extracted string
+        s = s.replace("\\\\", "DOUBLE_BACKSLASH_PLACEHOLDER")
+
+        # Fractions: \frac{a}{b} -> a/b
+        s = re.sub(r'\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}', r'\1/\2', s)
+
+        # Square root: \sqrt{x} -> sqrt(x)
+        s = re.sub(r'\\sqrt\s*\{([^{}]*)\}', r'sqrt(\1)', s)
+        s = re.sub(r'\\sqrt', 'sqrt', s)
+
+        # \text{...} -> ...
+        s = re.sub(r'\\text\s*\{([^{}]*)\}', r'\1', s)
+
+        # Greek letters
+        greek = {
+            'alpha': 'alpha', 'beta': 'beta', 'gamma': 'gamma', 'delta': 'delta',
+            'epsilon': 'epsilon', 'zeta': 'zeta', 'eta': 'eta', 'theta': 'theta',
+            'iota': 'iota', 'kappa': 'kappa', 'lambda': 'lambda', 'mu': 'mu',
+            'nu': 'nu', 'xi': 'xi', 'pi': 'pi', 'rho': 'rho', 'sigma': 'sigma',
+            'tau': 'tau', 'upsilon': 'upsilon', 'phi': 'phi', 'chi': 'chi',
+            'psi': 'psi', 'omega': 'omega',
+            'Alpha': 'Alpha', 'Beta': 'Beta', 'Gamma': 'Gamma', 'Delta': 'Delta',
+            'Theta': 'Theta', 'Lambda': 'Lambda', 'Pi': 'Pi', 'Sigma': 'Sigma',
+            'Phi': 'Phi', 'Psi': 'Psi', 'Omega': 'Omega',
+        }
+        for latex_name, plain_name in greek.items():
+            s = re.sub(rf'\\{latex_name}\b', plain_name, s)
+
+        # Trig and math functions
+        for fn in ['sin', 'cos', 'tan', 'sec', 'csc', 'cot',
+                   'arcsin', 'arccos', 'arctan',
+                   'log', 'ln', 'exp', 'lim', 'max', 'min',
+                   'sum', 'prod', 'int', 'oint']:
+            s = re.sub(rf'\\{fn}\b', fn, s)
+
+        # Symbols
+        symbol_map = {
+            r'\\infty': 'infinity',
+            r'\\times': 'x',
+            r'\\cdot': '.',
+            r'\\pm': '+/-',
+            r'\\mp': '-/+',
+            r'\\leq': '<=',
+            r'\\geq': '>=',
+            r'\\neq': '!=',
+            r'\\approx': '~',
+            r'\\equiv': '=',
+            r'\\rightarrow': '->',
+            r'\\leftarrow': '<-',
+            r'\\Rightarrow': '=>',
+            r'\\Leftarrow': '<=',
+            r'\\leftrightarrow': '<->',
+            r'\\partial': 'd',
+            r'\\nabla': 'del',
+            r'\\ldots': '...',
+            r'\\cdots': '...',
+        }
+        for pattern, repl in symbol_map.items():
+            s = re.sub(pattern, repl, s)
+
+        # \left and \right delimiters
+        s = re.sub(r'\\left\s*[\[({|]', '(', s)
+        s = re.sub(r'\\right\s*[\])}|]', ')', s)
+
+        # Superscripts/subscripts: ^{expr} -> ^expr, _{expr} -> _expr
+        s = re.sub(r'\^\{([^{}]*)\}', r'^\1', s)
+        s = re.sub(r'_\{([^{}]*)\}', r'_\1', s)
+
+        # Remove leftover curly braces from LaTeX grouping
+        s = s.replace('{', '').replace('}', '')
+
+        # Remove remaining backslashes
+        s = re.sub(r'\\(\w+)', r'\1', s)
+        s = s.replace('\\', '')
+
+        # Restore placeholder
+        s = s.replace("DOUBLE_BACKSLASH_PLACEHOLDER", "")
+
+        # Clean up whitespace
+        s = re.sub(r'\s+', ' ', s).strip()
+
+        # Limit length to avoid text overflow on screen
+        if len(s) > 55:
+            s = s[:52] + '...'
+
+        return s
+
+    def replace_mathtex_in_line(line: str) -> str:
+        """Replace all MathTex(...) and Tex(...) calls in a single line."""
+        # Match: MathTex(r"...") or MathTex("...") or Tex(r"...") or Tex("...")
+        # The regex uses a non-greedy match for the string content.
+        # It handles both single and double quotes.
+        def replacer(m):
+            latex_content = m.group(2)  # Content inside the quotes
+            plain_text = clean_latex_string(latex_content)
+            # Escape any double quotes in the plain text for safety
+            plain_text = plain_text.replace('"', "'")
+            return f'Text("{plain_text}"'
+
+        # Pattern: (MathTex|Tex)(  r?"content"  -- captures content inside quotes
+        line = re.sub(
+            r'\b(MathTex|Tex)\s*\(\s*r?"((?:[^"\\]|\\.)*)"',
+            replacer,
+            line
+        )
+        # Same for single-quoted strings
+        line = re.sub(
+            r"\b(MathTex|Tex)\s*\(\s*r?'((?:[^'\\]|\\.)*)'",
+            lambda m: f'Text("{clean_latex_string(m.group(2).replace(chr(34), chr(39)))}"',
+            line
+        )
+        return line
+
+    lines = code.split('\n')
+    converted_lines = []
+    for line in lines:
+        # Only process lines that actually contain MathTex or Tex calls
+        if re.search(r'\b(MathTex|Tex)\s*\(', line):
+            line = replace_mathtex_in_line(line)
+        converted_lines.append(line)
+
+    converted = '\n'.join(converted_lines)
+    if converted != code:
+        logger.info("convert_mathtex_to_text: replaced MathTex/Tex with Text() (LaTeX not available)")
+    return converted
 
 
 def fix_layout_issues_in_code(code: str) -> str:
@@ -912,8 +1088,55 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
         
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"
-            return False, f"Manim compilation failed:\n{error_msg}"
-        
+
+            # Detect if the failure is because 'latex' binary is missing on this system.
+            # This happens whenever the generated code uses MathTex() or Tex(), which both
+            # need a full LaTeX installation to render equations as SVG.
+            is_latex_error = (
+                ("FileNotFoundError" in error_msg and "latex" in error_msg.lower()) or
+                ("No such file or directory" in error_msg and "latex" in error_msg.lower())
+            )
+
+            if is_latex_error:
+                logger.info(
+                    "Compilation failed because LaTeX is not installed. "
+                    "Attempting automatic MathTex -> Text() conversion and retrying..."
+                )
+                fixed_code = convert_mathtex_to_text(code)
+
+                if fixed_code != code:
+                    # Rewrite the temp script file with the auto-fixed code
+                    with open(script_path, "w", encoding="utf-8") as f:
+                        f.write(fixed_code)
+                    code = fixed_code  # Keep track so we copy the right version later
+
+                    logger.info("Retrying Manim compilation after MathTex to Text() conversion...")
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+                    if result.stdout:
+                        logger.info(f"Auto-fix retry stdout: {result.stdout}")
+                    if result.stderr:
+                        logger.warning(f"Auto-fix retry stderr: {result.stderr}")
+
+                    if result.returncode != 0:
+                        retry_error = result.stderr or result.stdout or "Unknown error"
+                        return False, (
+                            "LaTeX is not installed on this system.\n"
+                            "MathTex calls were automatically converted to Text() but "
+                            "compilation still failed. Please regenerate without MathTex.\n\n"
+                            f"Error details:\n{retry_error}"
+                        )
+                    # Auto-fix succeeded — fall through to the video-finding logic below
+                else:
+                    # The code had no MathTex/Tex to convert, so we can't auto-fix it.
+                    return False, (
+                        "LaTeX is not installed on this system (the 'latex' binary was not found).\n"
+                        "Please avoid MathTex() and Tex() — use Text() for all text and math.\n\n"
+                        f"Original error:\n{error_msg}"
+                    )
+            else:
+                return False, f"Manim compilation failed:\n{error_msg}"
+
         # Find the output video
         video_dir = os.path.join(temp_dir, "videos", "generated_scene")
         video_path = None
@@ -1013,7 +1236,42 @@ def regenerate_code_with_error(original_prompt: str, model_choice: str,
     # Regenerate code using the error from a failed compilation attempt.
 
     logger.info("Regenerating code with error feedback...")
-    
+
+    # Detect if the error is caused by LaTeX not being installed on this system.
+    # This is signalled by a FileNotFoundError for the 'latex' binary inside the error.
+    is_latex_missing_error = (
+        ("FileNotFoundError" in error_message and "latex" in error_message.lower()) or
+        ("No such file or directory" in error_message and "latex" in error_message.lower()) or
+        # Also catch our own descriptive messages from compile_video()
+        ("LaTeX is not installed" in error_message)
+    )
+
+    # When LaTeX is not available, we augment the error with an explicit instruction
+    # so the model stops using MathTex/Tex and switches to Text() instead.
+    if is_latex_missing_error:
+        logger.info(
+            "LaTeX missing error detected — injecting 'no MathTex' constraint into regeneration prompt"
+        )
+        latex_constraint = (
+            "\n\n"
+            "===========================================================\n"
+            "CRITICAL SYSTEM CONSTRAINT — LaTeX is NOT installed here:\n"
+            "===========================================================\n"
+            "- DO NOT use MathTex() anywhere — it requires a LaTeX compiler.\n"
+            "- DO NOT use Tex() anywhere — it also requires LaTeX.\n"
+            "- Use ONLY Text() for every piece of text, including formulas.\n"
+            "- For equations, write them in plain text inside Text():\n"
+            "    Text('sin(theta) = opp/hyp').scale(0.4)\n"
+            "    Text('E = mc^2').scale(0.4)\n"
+            "    Text('a^2 + b^2 = c^2').scale(0.4)\n"
+            "    Text('f(x) = x^2 + 2x + 1').scale(0.4)\n"
+            "    Text('pi = 3.14159').scale(0.4)\n"
+            "- Subscripts/superscripts: write as plain strings — 'x_0', 'a_n', 'x^2'\n"
+            "===========================================================\n"
+        )
+        # Prepend the constraint so the model sees it first
+        error_message = latex_constraint + error_message
+
     # Use Groq client for regeneration
     if model_choice in ["CodeLlama-34B", "Phi-2"]:
         if not GROQ_AVAILABLE:
@@ -1032,7 +1290,7 @@ def regenerate_code_with_error(original_prompt: str, model_choice: str,
                 context=context,
                 error_message=error_message,
                 max_tokens=2048,
-                temperature=0.5  # Lower temperature for more focused correction
+                temperature=0.4
             )
             
             # Validate and fix the regenerated code
@@ -1076,6 +1334,7 @@ Please generate corrected code that fixes this error."""
             return False, f"Error during finetuned regeneration: {str(e)}"
     
     return False, f"Unknown model for regeneration: {model_choice}"
+
 
 
 def generate_teaching_script_text(description: str, code: str, model_choice: str, video_duration: float = 0.0) -> tuple:
@@ -1456,6 +1715,96 @@ def smart_generate_endpoint(request: SmartGenerateRequest):
             code=final_code,
             message=result
         )
+
+
+@app.post("/regenerate_and_compile", response_model=RegenerateAndCompileResponse)
+def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
+    # Error-feedback regeneration endpoint.
+    logger.info(
+        f"Regenerate-and-compile request: model={request.model_choice}, "
+        f"quality={request.quality}, max_retries={request.max_retries}"
+    )
+
+    # Clamp retries to a sensible range (1 – 3)
+    max_retries = min(max(1, request.max_retries), 3)
+
+    # Fetch RAG documentation context once — reused across all retry attempts
+    context = ""
+    if RAG_AVAILABLE:
+        rag = get_rag_pipeline_cached()
+        if rag and rag.is_indexed:
+            context = rag.retrieve_context(request.prompt)
+
+    last_error = request.error_message
+    current_code = request.current_code
+
+    for attempt in range(max_retries):
+        logger.info(f"Regeneration attempt {attempt + 1}/{max_retries}")
+
+        # Step A: LaTeX quick-fix — try converting MathTex to Text() first.  
+        is_latex_error = (
+            ("FileNotFoundError" in last_error and "latex" in last_error.lower()) or
+            ("No such file or directory" in last_error and "latex" in last_error.lower()) or
+            ("LaTeX is not installed" in last_error)
+        )
+
+        if is_latex_error:
+            fixed_code = convert_mathtex_to_text(current_code)
+            if fixed_code != current_code:
+                logger.info("Attempt: compiling LaTeX-auto-fixed code...")
+                compile_ok, compile_result = compile_video(fixed_code, request.quality)
+                if compile_ok:
+                    logger.info("LaTeX auto-fix succeeded!")
+                    return RegenerateAndCompileResponse(
+                        success=True,
+                        video_path=compile_result,
+                        code=fixed_code,
+                        message="Fixed by automatically converting MathTex to Text() (LaTeX not available on this system)"
+                    )
+                # Auto-fix didn't fully solve it — continue with LLM regeneration
+                current_code = fixed_code
+                last_error = compile_result
+
+        # Step B: LLM regeneration with the error as feedback.
+        regen_ok, new_code = regenerate_code_with_error(
+            original_prompt=request.prompt,
+            model_choice=request.model_choice,
+            context=context,
+            error_message=last_error
+        )
+
+        if not regen_ok:
+            logger.warning(f"LLM regeneration failed on attempt {attempt + 1}: {new_code[:200]}")
+            last_error = new_code
+            continue
+
+        current_code = new_code
+
+        # Try to compile the freshly generated code
+        compile_ok, compile_result = compile_video(current_code, request.quality)
+        if compile_ok:
+            logger.info(f"Compilation succeeded on regeneration attempt {attempt + 1}")
+            return RegenerateAndCompileResponse(
+                success=True,
+                video_path=compile_result,
+                code=current_code,
+                message=f"Code regenerated and compiled successfully (attempt {attempt + 1})"
+            )
+
+        # Still failing — save the error for the next iteration
+        last_error = compile_result
+        logger.warning(
+            f"Compilation still failed after regeneration attempt {attempt + 1}: "
+            f"{last_error[:200]}..."
+        )
+
+    # All retries exhausted
+    logger.error(f"Regeneration failed after {max_retries} attempts. Last error: {last_error[:200]}")
+    return RegenerateAndCompileResponse(
+        success=False,
+        code=current_code,
+        message=f"Failed after {max_retries} regeneration attempt(s). Last error: {last_error}"
+    )
 
 
 @app.get("/video/{filename}")
