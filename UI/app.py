@@ -107,6 +107,38 @@ def compile_video_api(code, quality):
         return False, f"Connection error: {str(e)}"
 
 
+def regenerate_and_compile_api(prompt, current_code, error_message, model_choice, quality, max_retries=2):
+    # Call the backend error-feedback regeneration endpoint.
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/regenerate_and_compile",
+            json={
+                "prompt": prompt,
+                "current_code": current_code,
+                "error_message": error_message,
+                "model_choice": model_choice,
+                "quality": quality,
+                "max_retries": max_retries
+            },
+            # Allow plenty of time — up to 2 retries, each may call the LLM + Manim
+            timeout=900
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                return True, data.get("video_path", ""), data.get("code", "")
+            else:
+                return False, data.get("message", "Unknown error"), data.get("code", "")
+        else:
+            return False, f"Backend error: {response.status_code}", ""
+
+    except requests.exceptions.Timeout:
+        return False, "Regeneration timed out. The server may still be working — please try again.", ""
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}", ""
+
+
 def smart_generate_api(prompt, model_choice, quality="medium", max_retries=3):
 
     # This uses the error feedback loop - if compilation fails, the error is sent back to the LLM to regenerate corrected code automatically.
@@ -751,20 +783,72 @@ if st.session_state.current_page == "Studio":
                 if not health:
                     st.error("Backend not connected")
                 else:
-                    with st.spinner(f"Compiling animation ({st.session_state.video_quality} quality)..."):
-                        st.session_state.video_path = None
-                        st.session_state.video_error = None
-                        
+                    # Clear any previous results before starting fresh
+                    st.session_state.video_path = None
+                    st.session_state.video_error = None
+
+                    # Step 1: First compilation attempt
+                    with st.spinner(
+                        f"Compiling animation ({st.session_state.video_quality} quality)..."
+                    ):
                         success, result = compile_video_api(
                             st.session_state.generated_code,
                             st.session_state.video_quality
                         )
-                        
-                        if success:
-                            st.session_state.video_path = result
+
+                    if success:
+                        # Compilation worked straight away — store the video and refresh
+                        st.session_state.video_path = result
+
+                    else:
+                        # Step 2: Compilation failed.
+                        # Show a visible "Compilation failed… Regenerating" message,
+                        # then call the error-feedback regeneration endpoint which:
+                        #   a) tries an instant LaTeX → Text() auto-fix (no LLM needed)
+                        #   b) if that is not enough, asks the LLM to regenerate the
+                        #      code with the error as context
+                        #   c) recompiles and returns the fixed video
+                        compile_error = result
+
+                        # Display the banner immediately so the user sees it while
+                        # the regeneration runs in the spinner below
+                        regen_banner = st.warning(
+                            " Compilation failed. Regenerating the code. Please wait…"
+                        )
+
+                        with st.spinner(
+                            "Analysing the error and regenerating fixed code…"
+                        ):
+                            regen_success, regen_result, regen_code = (
+                                regenerate_and_compile_api(
+                                    prompt=st.session_state.original_prompt or "",
+                                    current_code=st.session_state.generated_code,
+                                    error_message=compile_error,
+                                    model_choice=st.session_state.model_choice,
+                                    quality=st.session_state.video_quality,
+                                    max_retries=2
+                                )
+                            )
+
+                        # Remove the warning banner now that we have a result
+                        regen_banner.empty()
+
+                        if regen_success:
+                            # Update the code editor with the auto-fixed version
+                            if regen_code:
+                                st.session_state.generated_code = regen_code
+                            st.session_state.video_path = regen_result
+                            st.success(
+                                "Regeneration successful! "
+                                "The code was fixed automatically and the video is ready."
+                            )
                         else:
-                            st.session_state.video_error = result
-                    
+                            # All retries exhausted — store the combined error for display
+                            st.session_state.video_error = (
+                                f"--- Initial compilation error ---\n{compile_error}\n\n"
+                                f"--- Regeneration also failed ---\n{regen_result}"
+                            )
+
                     st.rerun()
         
         with col_video_info:
@@ -777,7 +861,7 @@ if st.session_state.current_page == "Studio":
         
         # Display video error if any
         if st.session_state.video_error:
-            st.error("Video Compilation Failed")
+            st.error("Video Compilation Failed (including auto-regeneration attempts)")
             with st.expander("View Error Details", expanded=True):
                 st.code(st.session_state.video_error, language="text")
         
