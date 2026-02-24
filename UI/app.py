@@ -257,39 +257,6 @@ def merge_video_audio_api(video_path, audio_text):
 
 # ANIMATION FEATURES API FUNCTIONS
 
-def get_template_categories():
-    try:
-        response = requests.get(f"{BACKEND_URL}/templates/categories", timeout=10)
-        if response.status_code == 200:
-            return response.json().get("categories", [])
-        return []
-    except:
-        return []
-
-
-def get_templates_in_category(category):
-    try:
-        response = requests.get(f"{BACKEND_URL}/templates/{category}", timeout=10)
-        if response.status_code == 200:
-            return response.json().get("templates", [])
-        return []
-    except:
-        return []
-
-
-def get_template_code(category, template_id, theme=None):
-    try:
-        url = f"{BACKEND_URL}/templates/{category}/{template_id}"
-        if theme:
-            url += f"?theme={theme}"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except:
-        return None
-
-
 def get_color_themes():
     try:
         response = requests.get(f"{BACKEND_URL}/themes", timeout=10)
@@ -510,9 +477,6 @@ if "current_page" not in st.session_state:
 if "selected_theme" not in st.session_state:
     st.session_state.selected_theme = "default"
 
-if "selected_template_category" not in st.session_state:
-    st.session_state.selected_template_category = None
-
 if "video_speed" not in st.session_state:
     st.session_state.video_speed = 1.0
 
@@ -531,9 +495,9 @@ with st.sidebar:
     st.header("Navigation")
     current_page = st.radio(
         "Choose Mode:",
-        ["Studio", "Templates", "Syntax Assistant"],
-        index=["Studio", "Templates", "Syntax Assistant"].index(
-            st.session_state.current_page if st.session_state.current_page in ["Studio", "Templates", "Syntax Assistant"] else "Studio"
+        ["Studio", "Syntax Assistant"],
+        index=["Studio", "Syntax Assistant"].index(
+            st.session_state.current_page if st.session_state.current_page in ["Studio", "Syntax Assistant"] else "Studio"
         ),
         key="nav_radio"
     )
@@ -1097,85 +1061,6 @@ if st.session_state.current_page == "Studio":
                             file_name="teaching_script_audio.mp3",
                             mime="audio/mp3"
                         )
-
-
-# TEMPLATES PAGE - Animation Template Library
-
-elif st.session_state.current_page == "Templates":
-    
-    st.subheader("Animation Templates Library")
-    st.write("Choose from pre-built animation templates for common math concepts.")
-    
-    # Get template categories
-    categories = get_template_categories()
-    
-    if not categories:
-        st.warning("Could not load templates. Make sure the backend is running.")
-    else:
-        # Category selection
-        col_cat, col_theme = st.columns([2, 1])
-        
-        with col_cat:
-            selected_category = st.selectbox(
-                "Select Category",
-                categories,
-                format_func=lambda x: x.replace("_", " ").title()
-            )
-        
-        with col_theme:
-            themes = get_color_themes()
-            theme_options = [t["id"] for t in themes] if themes else ["default"]
-            theme_display = {t["id"]: t["name"] for t in themes} if themes else {"default": "Default"}
-            
-            template_theme = st.selectbox(
-                "Color Theme",
-                theme_options,
-                format_func=lambda x: theme_display.get(x, x.title())
-            )
-        
-        st.markdown("---")
-        
-        # Get templates in selected category
-        if selected_category:
-            templates = get_templates_in_category(selected_category)
-            
-            if templates:
-                # Display templates in a grid
-                cols_per_row = 2
-                for i in range(0, len(templates), cols_per_row):
-                    row_templates = templates[i:i+cols_per_row]
-                    cols = st.columns(cols_per_row)
-                    
-                    for j, template in enumerate(row_templates):
-                        with cols[j]:
-                            with st.container():
-                                st.markdown(f"**{template['name']}**")
-                                st.caption(template['description'])
-                                
-                                if st.button("Use Template", key=f"template_{template['id']}"):
-                                    # Load template code
-                                    template_data = get_template_code(
-                                        selected_category,
-                                        template['id'],
-                                        theme=template_theme
-                                    )
-                                    
-                                    if template_data and template_data.get("code"):
-                                        st.session_state.generated_code = template_data["code"]
-                                        # Store template info as the prompt for teaching script
-                                        st.session_state.original_prompt = f"{template['name']}: {template['description']}"
-                                        st.session_state.current_page = "Studio"
-                                        st.rerun()
-                                    else:
-                                        st.error("Could not load template code")
-                                
-                                st.markdown("---")
-            else:
-                st.info(f"No templates found in {selected_category}")
-        
-        # 3D Templates note
-        if selected_category == "3d_scenes":
-            st.info("3D templates use ThreeDScene for 3D visualizations with camera rotation.")
 
 
 # CHATBOT PAGE - Manim Syntax Assistant
