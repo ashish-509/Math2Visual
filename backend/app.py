@@ -72,9 +72,8 @@ except ImportError as e:
     CHATBOT_AVAILABLE = False
     logger.warning(f"Manim chatbot not available: {e}")
 
-# Animation features (templates, themes, video processing)
+# Animation features (themes, video processing)
 try:
-    from src.animation.templates import get_template_library
     from src.animation.color_themes import get_color_theme_manager
     from src.animation.video_processor import get_video_processor
     ANIMATION_FEATURES_AVAILABLE = True
@@ -2018,60 +2017,6 @@ def get_available_models():
 
 
 # Animation Features Endpoints
-
-@app.get("/templates/categories")
-def get_template_categories():
-    if not ANIMATION_FEATURES_AVAILABLE:
-        return {"categories": [], "error": "Animation features not available"}
-    
-    library = get_template_library()
-    return {"categories": library.get_categories()}
-
-
-@app.get("/templates/{category}")
-def get_templates_in_category(category: str):
-    if not ANIMATION_FEATURES_AVAILABLE:
-        return {"templates": [], "error": "Animation features not available"}
-    
-    library = get_template_library()
-    templates = library.get_templates_in_category(category)
-    return {"templates": templates, "category": category}
-
-
-@app.get("/templates/{category}/{template_id}")
-def get_template(category: str, template_id: str, theme: Optional[str] = None):
-    if not ANIMATION_FEATURES_AVAILABLE:
-        return {"error": "Animation features not available"}
-    
-    library = get_template_library()
-    template = library.get_template(category, template_id)
-    
-    if not template:
-        return {"error": f"Template not found: {category}/{template_id}"}
-    
-    code = template["code"]
-    
-    if theme:
-        theme_manager = get_color_theme_manager()
-        code = theme_manager.apply_theme_to_code(code, theme)
-    
-    return {
-        "name": template["name"],
-        "description": template["description"],
-        "parameters": template["parameters"],
-        "code": code
-    }
-
-
-@app.get("/templates/search")
-def search_templates(query: str):
-    if not ANIMATION_FEATURES_AVAILABLE:
-        return {"results": [], "error": "Animation features not available"}
-    
-    library = get_template_library()
-    results = library.search_templates(query)
-    return {"results": results, "query": query}
-
 
 @app.get("/themes")
 def get_color_themes():
