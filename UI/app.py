@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Dark theme styling
+# Dark theme styling with auto-resize textareas
 st.markdown("""
 <style>
     .stApp {
@@ -36,7 +36,37 @@ st.markdown("""
     }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+    
+    /* Auto-resize textareas */
+    .stTextArea textarea {
+        min-height: 60px !important;
+        overflow-y: hidden;
+        resize: none;
+    }
+    
+    /* Compact input textarea */
+    div[data-testid="stTextArea"]:has(textarea[aria-label="Describe your mathematical concept"]) textarea {
+        min-height: 42px !important;
+        height: auto !important;
+    }
+    
+    /* Teaching script textarea - slightly larger */
+    div[data-testid="stTextArea"]:has(textarea[aria-label="Teaching explanation:"]) textarea {
+        min-height: 80px !important;
+        max-height: 200px !important;
+        overflow-y: auto !important;
+    }
 </style>
+
+<script>
+// Auto-resize textareas on input
+document.addEventListener('input', function(e) {
+    if (e.target.tagName === 'TEXTAREA') {
+        e.target.style.height = 'auto';
+        e.target.style.height = e.target.scrollHeight + 'px';
+    }
+});
+</script>
 """, unsafe_allow_html=True)
 
 
@@ -487,7 +517,7 @@ if st.session_state.current_page == "Studio":
         user_input = st.text_area(
             "Describe your mathematical concept",
             value=st.session_state.transcribed_text,
-            height=150,
+            height=68,
             placeholder="e.g., Visualize the area of a circle formula derivation..."
         )
 
@@ -557,10 +587,14 @@ if st.session_state.current_page == "Studio":
         
         # Expandable section for editing
         with st.expander("Edit Code", expanded=False):
+            # Calculate dynamic height based on code lines
+            code_lines = st.session_state.generated_code.count('\n') + 1
+            code_height = min(max(150, code_lines * 20), 500)  # Min 150, max 500
+            
             edited_code = st.text_area(
                 "Modify the code below:",
                 value=st.session_state.generated_code,
-                height=400,
+                height=code_height,
                 key=f"code_editor_{st.session_state.generation_id}"
             )
             
@@ -739,10 +773,14 @@ if st.session_state.current_page == "Studio":
                 st.markdown("---")
                 st.subheader("Teaching Explanation")
                 
+                # Calculate dynamic height based on content lines
+                script_lines = st.session_state.teaching_script.count('\n') + 1
+                script_height = min(max(80, script_lines * 24), 250)  # Min 80, max 250
+                
                 edited_script = st.text_area(
                     "Teaching explanation:",
                     value=st.session_state.teaching_script,
-                    height=300,
+                    height=script_height,
                     key=f"teaching_script_editor_{st.session_state.generation_id}"
                 )
                 

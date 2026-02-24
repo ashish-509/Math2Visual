@@ -302,6 +302,8 @@ psutil==7.2.1
     #   peft
 pyarrow==22.0.0
     # via streamlit
+pyaudio==0.2.14
+    # via -r requirements.in
 pybase64==1.4.3
     # via chromadb
 pycairo==1.29.0
