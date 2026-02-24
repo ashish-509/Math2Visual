@@ -255,78 +255,6 @@ def merge_video_audio_api(video_path, audio_text):
         return False, f"Connection error: {str(e)}"
 
 
-# ANIMATION FEATURES API FUNCTIONS
-
-def get_color_themes():
-    try:
-        response = requests.get(f"{BACKEND_URL}/themes", timeout=10)
-        if response.status_code == 200:
-            return response.json().get("themes", [])
-        return []
-    except:
-        return []
-
-
-def apply_theme_to_code(code, theme_id):
-    try:
-        response = requests.post(
-            f"{BACKEND_URL}/themes/apply",
-            json={"code": code, "theme_id": theme_id},
-            timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success"):
-                return data.get("code", code)
-        return code
-    except:
-        return code
-
-
-def convert_video_format(video_path, target_format, quality="medium"):
-    try:
-        response = requests.post(
-            f"{BACKEND_URL}/video/convert",
-            json={"video_path": video_path, "target_format": target_format, "quality": quality},
-            timeout=300
-        )
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success"):
-                return True, data.get("output_path")
-            return False, data.get("error", "Conversion failed")
-        return False, "Backend error"
-    except Exception as e:
-        return False, str(e)
-
-
-def change_video_speed(video_path, speed_factor):
-    try:
-        response = requests.post(
-            f"{BACKEND_URL}/video/speed",
-            json={"video_path": video_path, "speed_factor": speed_factor},
-            timeout=300
-        )
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success"):
-                return True, data.get("output_path")
-            return False, data.get("error", "Speed change failed")
-        return False, "Backend error"
-    except Exception as e:
-        return False, str(e)
-
-
-def get_supported_formats():
-    try:
-        response = requests.get(f"{BACKEND_URL}/video/formats", timeout=5)
-        if response.status_code == 200:
-            return response.json()
-        return {"formats": ["mp4"], "ffmpeg_available": False}
-    except:
-        return {"formats": ["mp4"], "ffmpeg_available": False}
-
-
 # CHATBOT API FUNCTIONS
 
 def check_chatbot_status():
@@ -473,16 +401,6 @@ if "chatbot_history" not in st.session_state:
 if "current_page" not in st.session_state:
     st.session_state.current_page = "Studio"
 
-# Animation features session state
-if "selected_theme" not in st.session_state:
-    st.session_state.selected_theme = "default"
-
-if "video_speed" not in st.session_state:
-    st.session_state.video_speed = 1.0
-
-if "export_format" not in st.session_state:
-    st.session_state.export_format = "mp4"
-
 # Generation counter to create unique widget keys (prevents stale cache)
 if "generation_id" not in st.session_state:
     st.session_state.generation_id = 0
@@ -548,71 +466,6 @@ with st.sidebar:
         
         if video_quality != st.session_state.video_quality:
             st.session_state.video_quality = video_quality
-        
-        # Color Theme Selection
-        st.markdown("---")
-        st.subheader("Color Theme")
-        
-        themes = get_color_themes()
-        if themes:
-            theme_names = ["default"] + [t["id"] for t in themes if t["id"] != "default"]
-            theme_display = {t["id"]: t["name"] for t in themes}
-            
-            selected_theme = st.selectbox(
-                "Animation Colors",
-                theme_names,
-                format_func=lambda x: theme_display.get(x, x.title()),
-                index=theme_names.index(st.session_state.selected_theme) if st.session_state.selected_theme in theme_names else 0
-            )
-            
-            if selected_theme != st.session_state.selected_theme:
-                st.session_state.selected_theme = selected_theme
-            
-            # Show color preview
-            selected_theme_data = next((t for t in themes if t["id"] == selected_theme), None)
-            if selected_theme_data and selected_theme_data.get("preview_colors"):
-                cols = st.columns(len(selected_theme_data["preview_colors"]))
-                for i, color in enumerate(selected_theme_data["preview_colors"]):
-                    with cols[i]:
-                        st.markdown(
-                            f'<div style="background-color:{color};width:30px;height:30px;border-radius:4px;"></div>',
-                            unsafe_allow_html=True
-                        )
-        
-        # Video Speed Control
-        st.markdown("---")
-        st.subheader("Playback Speed")
-        
-        speed = st.slider(
-            "Video Speed",
-            min_value=0.25,
-            max_value=2.0,
-            value=st.session_state.video_speed,
-            step=0.25,
-            help="Adjust playback speed (0.25x to 2x)"
-        )
-        
-        if speed != st.session_state.video_speed:
-            st.session_state.video_speed = speed
-        
-        # Export Format
-        st.markdown("---")
-        st.subheader("Export Format")
-        
-        format_info = get_supported_formats()
-        available_formats = format_info.get("formats", ["mp4"])
-        
-        export_format = st.selectbox(
-            "Export As",
-            available_formats,
-            index=available_formats.index(st.session_state.export_format) if st.session_state.export_format in available_formats else 0
-        )
-        
-        if export_format != st.session_state.export_format:
-            st.session_state.export_format = export_format
-        
-        if not format_info.get("ffmpeg_available", False):
-            st.warning("FFmpeg not found. Only MP4 export available.")
 
 
 # Main Content
@@ -681,10 +534,6 @@ if st.session_state.current_page == "Studio":
                     # Store the original prompt for teaching script
                     st.session_state.original_prompt = user_input
                     
-                    # Apply color theme if not default
-                    if success and st.session_state.selected_theme != "default":
-                        result = apply_theme_to_code(result, st.session_state.selected_theme)
-                    
                     st.session_state.generated_code = result
                 st.rerun()
 
@@ -697,27 +546,14 @@ if st.session_state.current_page == "Studio":
         # Display syntax-highlighted code with copy functionality
         st.code(st.session_state.generated_code, language="python", line_numbers=True)
         
-        # Copy/Download buttons row
-        col_copy, col_theme_apply, col_edit_toggle = st.columns([1, 1, 2])
-        
-        with col_copy:
-            # Download as .py file (also works as copy - user can open and copy)
-            st.download_button(
-                label="Download Code",
-                data=st.session_state.generated_code,
-                file_name="generated_manim_code.py",
-                mime="text/x-python",
-                help="Download the code as a .py file"
-            )
-        
-        with col_theme_apply:
-            if st.button("Apply Theme", help="Apply the selected color theme to the code"):
-                themed_code = apply_theme_to_code(
-                    st.session_state.generated_code,
-                    st.session_state.selected_theme
-                )
-                st.session_state.generated_code = themed_code
-                st.rerun()
+        # Download button
+        st.download_button(
+            label="Download Code",
+            data=st.session_state.generated_code,
+            file_name="generated_manim_code.py",
+            mime="text/x-python",
+            help="Download the code as a .py file"
+        )
         
         # Expandable section for editing
         with st.expander("Edit Code", expanded=False):
@@ -836,73 +672,15 @@ if st.session_state.current_page == "Studio":
             
             st.video(st.session_state.video_path)
             
-            # Video options row
-            col_download, col_speed, col_format = st.columns(3)
-            
-            with col_download:
-                with open(st.session_state.video_path, "rb") as video_file:
-                    video_bytes = video_file.read()
-                    st.download_button(
-                        label="Download MP4",
-                        data=video_bytes,
-                        file_name=os.path.basename(st.session_state.video_path),
-                        mime="video/mp4"
-                    )
-            
-            with col_speed:
-                if st.session_state.video_speed != 1.0:
-                    if st.button(f"Apply {st.session_state.video_speed}x Speed"):
-                        with st.spinner("Adjusting video speed..."):
-                            success, result = change_video_speed(
-                                st.session_state.video_path,
-                                st.session_state.video_speed
-                            )
-                            if success:
-                                st.success("Speed adjusted!")
-                                with open(result, "rb") as f:
-                                    st.download_button(
-                                        label="Download Speed-Adjusted",
-                                        data=f.read(),
-                                        file_name=f"video_{st.session_state.video_speed}x.mp4",
-                                        mime="video/mp4",
-                                        key="speed_download"
-                                    )
-                            else:
-                                st.error(f"Failed: {result}")
-            
-            with col_format:
-                if st.session_state.export_format != "mp4":
-                    if st.button(f"Convert to {st.session_state.export_format.upper()}"):
-                        with st.spinner(f"Converting to {st.session_state.export_format}..."):
-                            success, result = convert_video_format(
-                                st.session_state.video_path,
-                                st.session_state.export_format,
-                                st.session_state.video_quality
-                            )
-                            if success:
-                                st.success("Converted!")
-                                if st.session_state.export_format == "gif":
-                                    with open(result, "rb") as f:
-                                        st.download_button(
-                                            label="Download GIF",
-                                            data=f.read(),
-                                            file_name="animation.gif",
-                                            mime="image/gif",
-                                            key="gif_download"
-                                        )
-                                elif st.session_state.export_format == "webm":
-                                    with open(result, "rb") as f:
-                                        st.download_button(
-                                            label="Download WebM",
-                                            data=f.read(),
-                                            file_name="animation.webm",
-                                            mime="video/webm",
-                                            key="webm_download"
-                                        )
-                                else:
-                                    st.info(f"Saved to: {result}")
-                            else:
-                                st.error(f"Failed: {result}")
+            # Download button
+            with open(st.session_state.video_path, "rb") as video_file:
+                video_bytes = video_file.read()
+                st.download_button(
+                    label="Download MP4",
+                    data=video_bytes,
+                    file_name=os.path.basename(st.session_state.video_path),
+                    mime="video/mp4"
+                )
             
             # Teaching Script Section
             st.markdown("---")
