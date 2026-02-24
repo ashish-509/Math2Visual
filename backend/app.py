@@ -1497,6 +1497,27 @@ def get_media_duration(file_path: str) -> float:
     return 0.0
 
 
+def get_available_video_encoder() -> str:
+    # Detect available video encoder on the system. Returns the best available encoder for re-encoding.
+    # List of encoders to try, in order of preference
+    encoders_to_try = ["libx264", "h264", "libx265", "mpeg4"]
+    
+    for encoder in encoders_to_try:
+        try:
+            # Test if encoder is available
+            cmd = ["ffmpeg", "-hide_banner", "-encoders"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if encoder in result.stdout:
+                logger.info(f"Found video encoder: {encoder}")
+                return encoder
+        except:
+            pass
+    
+    # Default fallback - mpeg4 is always available in FFmpeg
+    logger.warning("No preferred encoder found, using mpeg4")
+    return "mpeg4"
+
+
 def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
     """
     Merge a video with generated audio narration.
@@ -1526,58 +1547,74 @@ def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
         audio_path = os.path.join(output_dir, "temp_narration.mp3")
         tts.save(audio_path)
         
-        # Get durations
+        # Get durations using ffprobe
         video_duration = get_media_duration(video_path)
         audio_duration = get_media_duration(audio_path)
         
-        if video_duration <= 0 or audio_duration <= 0:
-            return False, "Could not determine media durations"
-        
         logger.info(f"Video duration: {video_duration:.2f}s, Audio duration: {audio_duration:.2f}s")
         
+        if video_duration <= 0:
+            return False, f"Could not determine video duration. Video path: {video_path}"
+        
+        if audio_duration <= 0:
+            return False, "Could not determine audio duration"
+        
         # Calculate speed factor to sync video with audio
-        # If audio is longer, slow down video. If shorter, speed up video.
         speed_factor = video_duration / audio_duration
         
         # Limit speed adjustment to reasonable range (0.5x to 2x)
         speed_factor = max(0.5, min(2.0, speed_factor))
         
+        logger.info(f"Speed factor: {speed_factor:.4f}")
+        
         # Generate output filename
         base_name = os.path.splitext(os.path.basename(video_path))[0]
         final_video_path = os.path.join(output_dir, f"{base_name}_with_audio.mp4")
         
-        # Build ffmpeg command to merge video and audio with speed adjustment
-        # Using setpts for video speed and atempo for audio normalization
+        # Build ffmpeg command 
+        # First, we'll adjust video speed if needed, then add audio
         if abs(speed_factor - 1.0) < 0.05:
-            # No significant speed change needed, just merge
+            # No significant speed change needed, just merge video with audio
+            # Use -an to ignore any existing audio from video, then add our audio
             cmd = [
                 "ffmpeg",
-                "-y",
-                "-i", video_path,
-                "-i", audio_path,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-shortest",
+                "-y",                      # Overwrite output
+                "-i", video_path,          # Input video
+                "-i", audio_path,          # Input audio (narration)
+                "-map", "0:v:0",           # Take video stream from first input
+                "-map", "1:a:0",           # Take audio stream from second input
+                "-c:v", "copy",            # Copy video codec (no re-encode)
+                "-c:a", "aac",             # Encode audio as AAC
+                "-b:a", "192k",            # Audio bitrate
                 final_video_path
             ]
         else:
-            # Adjust video speed to match audio length
+            # Need to adjust video speed to match audio length
+            # Detect available encoder since libx264 may not be installed
+            video_encoder = get_available_video_encoder()
             pts_value = 1.0 / speed_factor
+            
+            # Build encoder-specific options
+            if video_encoder in ["libx264", "h264"]:
+                encoder_opts = ["-c:v", video_encoder, "-preset", "fast", "-crf", "23"]
+            elif video_encoder == "libx265":
+                encoder_opts = ["-c:v", video_encoder, "-preset", "fast", "-crf", "28"]
+            else:
+                # mpeg4 or other fallback
+                encoder_opts = ["-c:v", video_encoder, "-q:v", "5"]
+            
             cmd = [
                 "ffmpeg",
-                "-y",
-                "-i", video_path,
-                "-i", audio_path,
+                "-y",                      # Overwrite output
+                "-i", video_path,          # Input video
+                "-i", audio_path,          # Input audio (narration)
                 "-filter_complex",
-                f"[0:v]setpts={pts_value:.4f}*PTS[v]",
-                "-map", "[v]",
-                "-map", "1:a",
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-shortest",
+                f"[0:v]setpts={pts_value:.4f}*PTS[outv]",  # Adjust video speed
+                "-map", "[outv]",          # Use the filtered video
+                "-map", "1:a:0",           # Take audio from second input
+            ] + encoder_opts + [
+                "-c:a", "aac",             # Encode audio as AAC
+                "-b:a", "192k",            # Audio bitrate
                 final_video_path
             ]
         
@@ -1586,8 +1623,25 @@ def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
         if result.returncode != 0:
-            logger.error(f"FFmpeg error: {result.stderr}")
-            return False, f"FFmpeg error: {result.stderr[:500]}"
+            # Extract the actual error from stderr (skip the version/config header)
+            stderr = result.stderr
+            # Look for actual error lines (usually after "configuration:" lines)
+            error_lines = []
+            capture = False
+            for line in stderr.split('\n'):
+                # Skip empty lines and version/config info
+                if not line.strip():
+                    continue
+                if line.strip().startswith('configuration:'):
+                    capture = True  # Start capturing after config
+                    continue
+                if capture or 'error' in line.lower() or 'invalid' in line.lower():
+                    error_lines.append(line.strip())
+            
+            actual_error = '\n'.join(error_lines[-10:]) if error_lines else stderr[-1000:]
+            logger.error(f"FFmpeg failed with return code {result.returncode}")
+            logger.error(f"FFmpeg stderr: {actual_error}")
+            return False, f"FFmpeg error: {actual_error}"
         
         if not os.path.exists(final_video_path):
             return False, "Output video was not created"
