@@ -16,8 +16,10 @@ import logging
 import tempfile
 import shutil
 import subprocess
+import asyncio
 from typing import Optional, Tuple
 from tempfile import NamedTemporaryFile
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -97,6 +99,59 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Thread pool for running blocking operations without blocking the event loop
+executor = ThreadPoolExecutor(max_workers=4)
+
+
+# Startup event - preload models to eliminate cold start delay
+@app.on_event("startup")
+async def preload_models():
+    # Load all ML models at startup instead of on first request. This runs in parallel to speed up initialization.
+    logger.info("Starting model preloading...")
+    
+    loop = asyncio.get_event_loop()
+    
+    # Define preloading tasks
+    def load_rag():
+        if RAG_AVAILABLE:
+            try:
+                get_rag_pipeline_cached()
+                logger.info("RAG pipeline loaded")
+            except Exception as e:
+                logger.warning(f"RAG preload failed: {e}")
+    
+    def load_groq_codellama():
+        if GROQ_AVAILABLE:
+            try:
+                get_groq_client_cached("codellama")
+                logger.info("Groq CodeLlama client loaded")
+            except Exception as e:
+                logger.warning(f"Groq CodeLlama preload failed: {e}")
+    
+    def load_groq_phi2():
+        if GROQ_AVAILABLE:
+            try:
+                get_groq_client_cached("phi2")
+                logger.info("Groq Phi-2 client loaded")
+            except Exception as e:
+                logger.warning(f"Groq Phi-2 preload failed: {e}")
+    
+    def load_chatbot():
+        if CHATBOT_AVAILABLE:
+            try:
+                get_chatbot_cached()
+                logger.info("Chatbot loaded")
+            except Exception as e:
+                logger.warning(f"Chatbot preload failed: {e}")
+    
+    # Run all preloading tasks in parallel
+    preload_tasks = [load_rag, load_groq_codellama, load_groq_phi2, load_chatbot]
+    await asyncio.gather(*[loop.run_in_executor(executor, task) for task in preload_tasks])
+    
+    logger.info("Model preloading complete!")
+
 
 
 # Request and Response Models
@@ -1032,11 +1087,11 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
     if not class_name:
         return False, "Could not find a Scene class in the code"
     
-    # Quality flags
+    # Quality flags - use low quality for faster preview, medium/high for final
     quality_flags = {
-        "low": "-ql",
-        "medium": "-qm",
-        "high": "-qh"
+        "low": "-ql",   
+        "medium": "-qm",   
+        "high": "-qh"      
     }
     quality_flag = quality_flags.get(quality, "-qm")
     
@@ -1058,7 +1113,8 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
             quality_flag,
             script_path,
             class_name,
-            "--media_dir", temp_dir
+            "--media_dir", temp_dir,
+            "--disable_caching", "False",  # Enable Manim's internal caching for faster reruns
         ]
         
         logger.info(f"Running: {' '.join(cmd)}")
@@ -1706,10 +1762,13 @@ def health_check():
 
 
 @app.post("/generate_code", response_model=CodeGenerationResponse)
-def generate_code_endpoint(request: CodeGenerationRequest):
+async def generate_code_endpoint(request: CodeGenerationRequest):
     logger.info(f"Code generation request: model={request.model_choice}, prompt={request.prompt[:50]}...")
     
-    success, result = generate_code_with_model(request.prompt, request.model_choice)
+    # Run in thread pool to avoid blocking the event loop
+    success, result = await asyncio.to_thread(
+        generate_code_with_model, request.prompt, request.model_choice
+    )
     
     if success:
         return CodeGenerationResponse(success=True, code=result, message="Code generated successfully")
@@ -1718,10 +1777,13 @@ def generate_code_endpoint(request: CodeGenerationRequest):
 
 
 @app.post("/compile_video", response_model=VideoCompilationResponse)
-def compile_video_endpoint(request: VideoCompilationRequest):
+async def compile_video_endpoint(request: VideoCompilationRequest):
     logger.info(f"Video compilation request: quality={request.quality}")
     
-    success, result = compile_video(request.code, request.quality)
+    # Run in thread pool - Manim compilation is CPU-bound
+    success, result = await asyncio.to_thread(
+        compile_video, request.code, request.quality
+    )
     
     if success:
         return VideoCompilationResponse(success=True, video_path=result)
@@ -1730,7 +1792,7 @@ def compile_video_endpoint(request: VideoCompilationRequest):
 
 
 @app.post("/smart_generate", response_model=SmartGenerateResponse)
-def smart_generate_endpoint(request: SmartGenerateRequest):
+async def smart_generate_endpoint(request: SmartGenerateRequest):
     # If compilation fails, it automatically retries by sending the error back to the LLM for correction.
 
     logger.info(f"Smart generate request: model={request.model_choice}, retries={request.max_retries}")
@@ -1738,11 +1800,13 @@ def smart_generate_endpoint(request: SmartGenerateRequest):
     # Validate max_retries (keep it reasonable)
     max_retries = min(max(1, request.max_retries), 5)
     
-    success, result, final_code = generate_and_compile_with_retry(
-        prompt=request.prompt,
-        model_choice=request.model_choice,
-        quality=request.quality,
-        max_retries=max_retries
+    # Run in thread pool - this involves LLM calls and subprocess compilation
+    success, result, final_code = await asyncio.to_thread(
+        generate_and_compile_with_retry,
+        request.prompt,
+        request.model_choice,
+        request.quality,
+        max_retries
     )
     
     if success:
@@ -1762,7 +1826,7 @@ def smart_generate_endpoint(request: SmartGenerateRequest):
 
 
 @app.post("/regenerate_and_compile", response_model=RegenerateAndCompileResponse)
-def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
+async def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
     # Error-feedback regeneration endpoint.
     logger.info(
         f"Regenerate-and-compile request: model={request.model_choice}, "
@@ -1796,7 +1860,9 @@ def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
             fixed_code = convert_mathtex_to_text(current_code)
             if fixed_code != current_code:
                 logger.info("Attempt: compiling LaTeX-auto-fixed code...")
-                compile_ok, compile_result = compile_video(fixed_code, request.quality)
+                compile_ok, compile_result = await asyncio.to_thread(
+                    compile_video, fixed_code, request.quality
+                )
                 if compile_ok:
                     logger.info("LaTeX auto-fix succeeded!")
                     return RegenerateAndCompileResponse(
@@ -1810,11 +1876,12 @@ def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
                 last_error = compile_result
 
         # Step B: LLM regeneration with the error as feedback.
-        regen_ok, new_code = regenerate_code_with_error(
-            original_prompt=request.prompt,
-            model_choice=request.model_choice,
-            context=context,
-            error_message=last_error
+        regen_ok, new_code = await asyncio.to_thread(
+            regenerate_code_with_error,
+            request.prompt,
+            request.model_choice,
+            context,
+            last_error
         )
 
         if not regen_ok:
@@ -1825,7 +1892,9 @@ def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
         current_code = new_code
 
         # Try to compile the freshly generated code
-        compile_ok, compile_result = compile_video(current_code, request.quality)
+        compile_ok, compile_result = await asyncio.to_thread(
+            compile_video, current_code, request.quality
+        )
         if compile_ok:
             logger.info(f"Compilation succeeded on regeneration attempt {attempt + 1}")
             return RegenerateAndCompileResponse(
@@ -1876,10 +1945,12 @@ def get_video_duration_endpoint(request: VideoDurationRequest):
 
 
 @app.post("/generate_teaching_script", response_model=TeachingScriptResponse)
-def generate_teaching_script_endpoint(request: TeachingScriptRequest):
+async def generate_teaching_script_endpoint(request: TeachingScriptRequest):
     logger.info(f"Teaching script request: model={request.model_choice}, duration={request.video_duration}s")
     
-    success, result = generate_teaching_script_text(
+    # Run in thread pool - involves LLM call
+    success, result = await asyncio.to_thread(
+        generate_teaching_script_text,
         request.animation_description,
         request.manim_code,
         request.model_choice,
@@ -1893,10 +1964,11 @@ def generate_teaching_script_endpoint(request: TeachingScriptRequest):
 
 
 @app.post("/generate_tts", response_model=TTSResponse)
-def generate_tts_endpoint(request: TTSRequest):
+async def generate_tts_endpoint(request: TTSRequest):
     logger.info(f"TTS request: text length={len(request.text)}")
     
-    audio_path = generate_tts_audio_file(request.text)
+    # Run in thread pool - network call to Google TTS
+    audio_path = await asyncio.to_thread(generate_tts_audio_file, request.text)
     
     if audio_path:
         return TTSResponse(success=True, audio_path=audio_path, message="Audio generated successfully")
@@ -1915,10 +1987,13 @@ def get_audio(filename: str): # Download an audio file.
 
 
 @app.post("/merge_video_audio", response_model=MergeVideoAudioResponse)
-def merge_video_audio_endpoint(request: MergeVideoAudioRequest):
+async def merge_video_audio_endpoint(request: MergeVideoAudioRequest):
     logger.info(f"Merge request: video={request.video_path}")
     
-    success, result = merge_video_with_audio(request.video_path, request.audio_text)
+    # Run in thread pool - FFmpeg subprocess
+    success, result = await asyncio.to_thread(
+        merge_video_with_audio, request.video_path, request.audio_text
+    )
     
     if success:
         return MergeVideoAudioResponse(
@@ -1936,8 +2011,7 @@ def merge_video_audio_endpoint(request: MergeVideoAudioRequest):
 # CHATBOT ENDPOINTS - Manim Syntax Assistant
 
 @app.post("/chatbot/ask", response_model=ChatbotResponse)
-def chatbot_ask(request: ChatbotRequest):
-  
+async def chatbot_ask(request: ChatbotRequest):
     logger.info(f"Chatbot question: {request.question[:50]}...")
     
     # Check if chatbot is available
@@ -1959,11 +2033,11 @@ def chatbot_ask(request: ChatbotRequest):
                 message="Chatbot initialization failed"
             )
         
-        # Ask the question
+        # Run chatbot query in thread pool - involves RAG retrieval and LLM call
         if request.include_examples:
-            response = chatbot.ask_with_examples(request.question)
+            response = await asyncio.to_thread(chatbot.ask_with_examples, request.question)
         else:
-            response = chatbot.ask(request.question)
+            response = await asyncio.to_thread(chatbot.ask, request.question)
         
         return ChatbotResponse(
             success=not response.get("error", False),
