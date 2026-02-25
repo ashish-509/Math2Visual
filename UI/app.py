@@ -480,7 +480,7 @@ with st.sidebar:
     # Navigation 
     st.header("Navigation")
     current_page = st.radio(
-        "Choose Mode:",
+        # "Choose Mode:",
         ["Studio", "Syntax Assistant"],
         index=["Studio", "Syntax Assistant"].index(
             st.session_state.current_page if st.session_state.current_page in ["Studio", "Syntax Assistant"] else "Studio"
@@ -503,7 +503,6 @@ with st.sidebar:
             st.success("Backend: Connected")
         else:
             st.error("Backend: Not Connected")
-            st.warning("Start backend with: python backend/app.py")
         
         model_options = get_available_models()
         if not model_options:
