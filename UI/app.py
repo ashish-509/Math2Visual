@@ -480,7 +480,7 @@ with st.sidebar:
     # Navigation 
     st.header("Navigation")
     current_page = st.radio(
-        # "Choose Mode:",
+        "Choose Mode:",
         ["Studio", "Syntax Assistant"],
         index=["Studio", "Syntax Assistant"].index(
             st.session_state.current_page if st.session_state.current_page in ["Studio", "Syntax Assistant"] else "Studio"
