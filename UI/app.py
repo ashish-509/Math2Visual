@@ -1,5 +1,7 @@
 import streamlit as st
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import os
 import speech_recognition as sr
 from tempfile import NamedTemporaryFile
@@ -8,6 +10,33 @@ from tempfile import NamedTemporaryFile
 
 # Backend URL 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+
+# Create a session with connection pooling and retry logic
+# This reuses TCP connections, reducing latency on subsequent requests
+def get_http_session():
+    if "http_session" not in st.session_state:
+        session = requests.Session()
+        
+        # Configure retry strategy for resilience
+        retry_strategy = Retry(
+            total=2,
+            backoff_factor=0.5,
+            status_forcelist=[502, 503, 504],
+        )
+        
+        # Mount adapter with connection pooling (keeps connections alive)
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,
+            pool_maxsize=10
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        st.session_state.http_session = session
+    
+    return st.session_state.http_session
 
 
 # Page Setup
@@ -74,7 +103,8 @@ document.addEventListener('input', function(e) {
 
 def check_backend_health():
     try:
-        response = requests.get(f"{BACKEND_URL}/health", timeout=5)
+        session = get_http_session()
+        response = session.get(f"{BACKEND_URL}/health", timeout=5)
         if response.status_code == 200:
             return response.json()
         return None
@@ -84,7 +114,8 @@ def check_backend_health():
 
 def get_available_models():
     try:
-        response = requests.get(f"{BACKEND_URL}/available_models", timeout=5)
+        session = get_http_session()
+        response = session.get(f"{BACKEND_URL}/available_models", timeout=5)
         if response.status_code == 200:
             return response.json().get("models", [])
         return ["CodeLlama-34B", "Phi-2"]
@@ -95,7 +126,8 @@ def get_available_models():
 def generate_code_api(prompt, model_choice):
     # Call backend API to generate Manim code.
     try:
-        response = requests.post(
+        session = get_http_session()
+        response = session.post(
             f"{BACKEND_URL}/generate_code",
             json={"prompt": prompt, "model_choice": model_choice},
             timeout=120
@@ -116,7 +148,8 @@ def generate_code_api(prompt, model_choice):
 def compile_video_api(code, quality):
     # Call backend API to compile video.
     try:
-        response = requests.post(
+        session = get_http_session()
+        response = session.post(
             f"{BACKEND_URL}/compile_video",
             json={"code": code, "quality": quality},
             timeout=600
@@ -140,7 +173,8 @@ def compile_video_api(code, quality):
 def regenerate_and_compile_api(prompt, current_code, error_message, model_choice, quality, max_retries=2):
     # Call the backend error-feedback regeneration endpoint.
     try:
-        response = requests.post(
+        session = get_http_session()
+        response = session.post(
             f"{BACKEND_URL}/regenerate_and_compile",
             json={
                 "prompt": prompt,
@@ -150,7 +184,6 @@ def regenerate_and_compile_api(prompt, current_code, error_message, model_choice
                 "quality": quality,
                 "max_retries": max_retries
             },
-            # Allow plenty of time — up to 2 retries, each may call the LLM + Manim
             timeout=900
         )
 
@@ -164,17 +197,16 @@ def regenerate_and_compile_api(prompt, current_code, error_message, model_choice
             return False, f"Backend error: {response.status_code}", ""
 
     except requests.exceptions.Timeout:
-        return False, "Regeneration timed out. The server may still be working — please try again.", ""
+        return False, "Regeneration timed out. The server may still be working.", ""
     except requests.exceptions.RequestException as e:
         return False, f"Connection error: {str(e)}", ""
 
 
 def smart_generate_api(prompt, model_choice, quality="medium", max_retries=3):
-
-    # This uses the error feedback loop - if compilation fails, the error is sent back to the LLM to regenerate corrected code automatically.
-   
+    # Uses error feedback loop - if compilation fails, error goes back to LLM for correction.
     try:
-        response = requests.post(
+        session = get_http_session()
+        response = session.post(
             f"{BACKEND_URL}/smart_generate",
             json={
                 "prompt": prompt,
@@ -182,7 +214,7 @@ def smart_generate_api(prompt, model_choice, quality="medium", max_retries=3):
                 "quality": quality,
                 "max_retries": max_retries
             },
-            timeout=900  # Allow more time for retries
+            timeout=900
         )
         
         if response.status_code == 200:
@@ -203,7 +235,8 @@ def smart_generate_api(prompt, model_choice, quality="medium", max_retries=3):
 def generate_teaching_script_api(description, code, model_choice, video_duration=0.0):
     """Call backend API to generate teaching script matched to video duration."""
     try:
-        response = requests.post(
+        session = get_http_session()
+        response = session.post(
             f"{BACKEND_URL}/generate_teaching_script",
             json={
                 "animation_description": description,
@@ -231,7 +264,8 @@ def generate_teaching_script_api(description, code, model_choice, video_duration
 
 def get_video_duration_api(video_path):
     try:
-        response = requests.post(
+        session = get_http_session()
+        response = session.post(
             f"{BACKEND_URL}/get_video_duration",
             json={"video_path": video_path},
             timeout=30
@@ -246,7 +280,8 @@ def get_video_duration_api(video_path):
 
 def generate_tts_api(text):
     try:
-        response = requests.post(
+        session = get_http_session()
+        response = session.post(
             f"{BACKEND_URL}/generate_tts",
             json={"text": text},
             timeout=60
@@ -264,7 +299,8 @@ def generate_tts_api(text):
 
 def merge_video_audio_api(video_path, audio_text):
     try:
-        response = requests.post(
+        session = get_http_session()
+        response = session.post(
             f"{BACKEND_URL}/merge_video_audio",
             json={"video_path": video_path, "audio_text": audio_text},
             timeout=300
@@ -289,7 +325,8 @@ def merge_video_audio_api(video_path, audio_text):
 
 def check_chatbot_status():
     try:
-        response = requests.get(f"{BACKEND_URL}/chatbot/status", timeout=5)
+        session = get_http_session()
+        response = session.get(f"{BACKEND_URL}/chatbot/status", timeout=5)
         if response.status_code == 200:
             return response.json()
         return {"available": False, "ready": False}
@@ -298,9 +335,9 @@ def check_chatbot_status():
 
 
 def ask_chatbot(question: str, include_examples: bool = False):
-  
     try:
-        response = requests.post(
+        session = get_http_session()
+        response = session.post(
             f"{BACKEND_URL}/chatbot/ask",
             json={"question": question, "include_examples": include_examples},
             timeout=30
@@ -334,7 +371,8 @@ def ask_chatbot(question: str, include_examples: bool = False):
 
 def get_syntax_info(class_name: str):
     try:
-        response = requests.get(
+        session = get_http_session()
+        response = session.get(
             f"{BACKEND_URL}/chatbot/syntax/{class_name}",
             timeout=30
         )
