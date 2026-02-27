@@ -3,6 +3,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
+import base64
 import speech_recognition as sr
 from tempfile import NamedTemporaryFile
 
@@ -166,6 +167,31 @@ def compile_video_api(code, quality):
             
     except requests.exceptions.Timeout:
         return False, "Video compilation timed out."
+    except requests.exceptions.RequestException as e:
+        return False, f"Connection error: {str(e)}"
+
+
+def extract_from_image_api(image_base64, mime_type="image/png"):
+    # Send a base64-encoded image to the backend for math extraction.
+    try:
+        session = get_http_session()
+        response = session.post(
+            f"{BACKEND_URL}/extract_from_image",
+            json={"image_base64": image_base64, "mime_type": mime_type},
+            timeout=120
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                return True, data.get("extracted_text", "")
+            else:
+                return False, data.get("message", "Extraction failed")
+        else:
+            return False, f"Backend error: {response.status_code}"
+
+    except requests.exceptions.Timeout:
+        return False, "Image extraction timed out. Please try again."
     except requests.exceptions.RequestException as e:
         return False, f"Connection error: {str(e)}"
 
@@ -473,17 +499,51 @@ if "current_page" not in st.session_state:
 if "generation_id" not in st.session_state:
     st.session_state.generation_id = 0
 
+# Photo to Animation session state
+if "photo_extracted_text" not in st.session_state:
+    st.session_state.photo_extracted_text = ""
+
+if "photo_confirmed_prompt" not in st.session_state:
+    st.session_state.photo_confirmed_prompt = ""
+
+if "photo_generated_code" not in st.session_state:
+    st.session_state.photo_generated_code = ""
+
+if "photo_video_path" not in st.session_state:
+    st.session_state.photo_video_path = None
+
+if "photo_video_error" not in st.session_state:
+    st.session_state.photo_video_error = None
+
+if "photo_teaching_script" not in st.session_state:
+    st.session_state.photo_teaching_script = ""
+
+if "photo_teaching_audio" not in st.session_state:
+    st.session_state.photo_teaching_audio = None
+
+if "photo_final_video" not in st.session_state:
+    st.session_state.photo_final_video = None
+
+if "photo_final_error" not in st.session_state:
+    st.session_state.photo_final_error = None
+
+if "photo_gen_id" not in st.session_state:
+    st.session_state.photo_gen_id = 0
+
 
 # Sidebar
 
 with st.sidebar:
     # Navigation 
     st.header("Navigation")
+    page_options = ["Studio", "Photo to Animation", "Syntax Assistant"]
     current_page = st.radio(
         "Choose Mode:",
-        ["Studio", "Syntax Assistant"],
-        index=["Studio", "Syntax Assistant"].index(
-            st.session_state.current_page if st.session_state.current_page in ["Studio", "Syntax Assistant"] else "Studio"
+        page_options,
+        index=page_options.index(
+            st.session_state.current_page
+            if st.session_state.current_page in page_options
+            else "Studio"
         ),
         key="nav_radio"
     )
@@ -491,8 +551,8 @@ with st.sidebar:
     # Update session state
     st.session_state.current_page = current_page
     
-    # Only show settings for Studio page
-    if st.session_state.current_page == "Studio":
+    # Show settings for Studio and Photo to Animation pages
+    if st.session_state.current_page in ("Studio", "Photo to Animation"):
         st.markdown("---")
         
         # Backend Status
@@ -913,6 +973,366 @@ if st.session_state.current_page == "Studio":
                             data=audio_bytes,
                             file_name="teaching_script_audio.mp3",
                             mime="audio/mp3"
+                        )
+
+
+# PHOTO TO ANIMATION PAGE
+
+elif st.session_state.current_page == "Photo to Animation":
+
+    health = check_backend_health()
+
+    st.markdown(
+        "Upload a photo of a solved math problem and turn it into "
+        "an animated explainer video."
+    )
+
+    # ------------------------------------------------------------------
+    # Step 1 — Upload the image
+    # ------------------------------------------------------------------
+    uploaded_file = st.file_uploader(
+        "Upload a photo of a math problem",
+        type=["jpg", "jpeg", "png"],
+        help="Snap a picture of a textbook page or handwritten solution",
+    )
+
+    if uploaded_file is not None:
+        # Show a preview so the user can verify it's the right image
+        st.image(uploaded_file, caption="Uploaded image", width=400)
+
+        # Read the raw bytes once and keep them handy
+        image_bytes = uploaded_file.getvalue()
+        mime_type = uploaded_file.type or "image/png"
+
+        # ------------------------------------------------------------------
+        # Step 2 — Extract math content from the photo
+        # ------------------------------------------------------------------
+        if st.button("Extract Math Content", type="primary"):
+            if not health:
+                st.error("Backend not connected. Please start the backend server.")
+            else:
+                # Reset downstream state when a new extraction starts
+                st.session_state.photo_extracted_text = ""
+                st.session_state.photo_confirmed_prompt = ""
+                st.session_state.photo_generated_code = ""
+                st.session_state.photo_video_path = None
+                st.session_state.photo_video_error = None
+                st.session_state.photo_teaching_script = ""
+                st.session_state.photo_teaching_audio = None
+                st.session_state.photo_final_video = None
+                st.session_state.photo_final_error = None
+
+                with st.spinner("Reading the image with AI vision model..."):
+                    encoded = base64.b64encode(image_bytes).decode("utf-8")
+                    ok, text = extract_from_image_api(encoded, mime_type)
+
+                if ok:
+                    st.session_state.photo_extracted_text = text
+                else:
+                    st.error(text)
+
+                st.rerun()
+
+    # ------------------------------------------------------------------
+    # Step 3 — Let the user review and edit the extracted text
+    # ------------------------------------------------------------------
+    if st.session_state.photo_extracted_text:
+        st.subheader("Extracted Content")
+        st.caption(
+            "Review the text below. Fix any mistakes before generating "
+            "the animation — this is what the AI will animate."
+        )
+
+        edited_text = st.text_area(
+            "Extracted math content:",
+            value=st.session_state.photo_extracted_text,
+            height=180,
+            key=f"photo_editor_{st.session_state.photo_gen_id}",
+        )
+
+        if st.button("Confirm & Generate Code", type="primary"):
+            if not edited_text.strip():
+                st.error("The text area is empty. Please add a description.")
+            elif not health:
+                st.error("Backend not connected.")
+            else:
+                # Save the confirmed prompt and clear old generation output
+                st.session_state.photo_confirmed_prompt = edited_text.strip()
+                st.session_state.photo_generated_code = ""
+                st.session_state.photo_video_path = None
+                st.session_state.photo_video_error = None
+                st.session_state.photo_teaching_script = ""
+                st.session_state.photo_teaching_audio = None
+                st.session_state.photo_final_video = None
+                st.session_state.photo_final_error = None
+                st.session_state.photo_gen_id += 1
+
+                with st.spinner("Generating Manim code from your description..."):
+                    prompt = (
+                        "Create a step-by-step animated visualization of "
+                        "the following math problem and its solution:\n\n"
+                        + st.session_state.photo_confirmed_prompt
+                    )
+                    ok, code = generate_code_api(prompt, st.session_state.model_choice)
+                    st.session_state.photo_generated_code = code
+
+                st.rerun()
+
+    # ------------------------------------------------------------------
+    # Step 4 — Show generated code with edit option
+    # ------------------------------------------------------------------
+    if st.session_state.photo_generated_code:
+        st.markdown("---")
+        st.subheader("Generated Manim Code")
+        st.code(st.session_state.photo_generated_code, language="python", line_numbers=True)
+
+        st.download_button(
+            label="Download Code",
+            data=st.session_state.photo_generated_code,
+            file_name="photo_manim_code.py",
+            mime="text/x-python",
+        )
+
+        with st.expander("Edit Code", expanded=False):
+            code_lines = st.session_state.photo_generated_code.count("\n") + 1
+            code_height = min(max(150, code_lines * 20), 500)
+
+            edited_code = st.text_area(
+                "Modify the code below:",
+                value=st.session_state.photo_generated_code,
+                height=code_height,
+                key=f"photo_code_editor_{st.session_state.photo_gen_id}",
+            )
+
+            col_save, col_info = st.columns([1, 3])
+            with col_save:
+                if st.button("Save Changes", key=f"photo_save_{st.session_state.photo_gen_id}"):
+                    if edited_code != st.session_state.photo_generated_code:
+                        st.session_state.photo_generated_code = edited_code
+                        st.rerun()
+            with col_info:
+                if edited_code != st.session_state.photo_generated_code:
+                    st.caption("Unsaved changes — click Save Changes")
+
+        # ------------------------------------------------------------------
+        # Step 5 — Compile the video
+        # ------------------------------------------------------------------
+        st.markdown("---")
+        col_vid_btn, col_vid_info = st.columns([1, 2])
+
+        with col_vid_btn:
+            if st.button("Generate Video", type="primary", key="photo_gen_video"):
+                if not health:
+                    st.error("Backend not connected")
+                else:
+                    st.session_state.photo_video_path = None
+                    st.session_state.photo_video_error = None
+
+                    with st.spinner(
+                        f"Compiling animation ({st.session_state.video_quality} quality)..."
+                    ):
+                        ok, result = compile_video_api(
+                            st.session_state.photo_generated_code,
+                            st.session_state.video_quality,
+                        )
+
+                    if ok:
+                        st.session_state.photo_video_path = result
+                    else:
+                        # Auto-fix: send the error back to the LLM
+                        compile_error = result
+                        regen_banner = st.warning(
+                            "Compilation failed. Regenerating the code. Please wait..."
+                        )
+
+                        with st.spinner("Analysing error and regenerating fixed code..."):
+                            regen_ok, regen_result, regen_code = regenerate_and_compile_api(
+                                prompt=st.session_state.photo_confirmed_prompt or "",
+                                current_code=st.session_state.photo_generated_code,
+                                error_message=compile_error,
+                                model_choice=st.session_state.model_choice,
+                                quality=st.session_state.video_quality,
+                                max_retries=2,
+                            )
+
+                        regen_banner.empty()
+
+                        if regen_ok:
+                            if regen_code:
+                                st.session_state.photo_generated_code = regen_code
+                            st.session_state.photo_video_path = regen_result
+                            st.success("Code fixed automatically — video is ready!")
+                        else:
+                            st.session_state.photo_video_error = (
+                                f"--- Initial error ---\n{compile_error}\n\n"
+                                f"--- Regeneration failed ---\n{regen_result}"
+                            )
+
+                    st.rerun()
+
+        with col_vid_info:
+            quality_labels = {"low": "480p 15fps", "medium": "720p 30fps", "high": "1080p 60fps"}
+            st.info(f"Quality: {quality_labels.get(st.session_state.video_quality, 'medium')}")
+
+        # Show compilation errors if any
+        if st.session_state.photo_video_error:
+            st.error("Video compilation failed (including auto-fix attempts)")
+            with st.expander("View Error Details", expanded=True):
+                st.code(st.session_state.photo_video_error, language="text")
+
+        # ------------------------------------------------------------------
+        # Step 6 — Display the video + teaching script + narration
+        # ------------------------------------------------------------------
+        if st.session_state.photo_video_path and os.path.exists(st.session_state.photo_video_path):
+            st.markdown("---")
+            st.subheader("Generated Animation")
+            st.video(st.session_state.photo_video_path)
+
+            with open(st.session_state.photo_video_path, "rb") as vf:
+                st.download_button(
+                    label="Download MP4",
+                    data=vf.read(),
+                    file_name="photo_animation.mp4",
+                    mime="video/mp4",
+                    key="photo_dl_mp4",
+                )
+
+            # Teaching script
+            st.markdown("---")
+            st.subheader("Teaching Script")
+
+            col_t_btn, col_t_info = st.columns([1, 2])
+
+            with col_t_btn:
+                if st.button("Generate Teaching Script", key="photo_teach_btn"):
+                    prompt_text = (
+                        st.session_state.photo_confirmed_prompt
+                        or st.session_state.photo_extracted_text
+                    )
+                    if not prompt_text.strip():
+                        st.error("No description available.")
+                    else:
+                        with st.spinner("Creating explanation matched to video..."):
+                            dur = get_video_duration_api(st.session_state.photo_video_path)
+                            ok, script = generate_teaching_script_api(
+                                prompt_text,
+                                st.session_state.photo_generated_code,
+                                st.session_state.model_choice,
+                                dur,
+                            )
+                            if ok:
+                                st.session_state.photo_teaching_script = script
+                            else:
+                                st.error(script)
+                        st.rerun()
+
+            with col_t_info:
+                dur = get_video_duration_api(st.session_state.photo_video_path)
+                if dur > 0:
+                    st.info(f"Video duration: {dur:.1f}s — script will match this")
+                else:
+                    st.info("The AI will explain the animation in simple words")
+
+            # Display & edit teaching script
+            if st.session_state.photo_teaching_script:
+                st.markdown("---")
+                st.subheader("Teaching Explanation")
+
+                script_lines = st.session_state.photo_teaching_script.count("\n") + 1
+                script_height = min(max(80, script_lines * 24), 250)
+
+                edited_script = st.text_area(
+                    "Teaching explanation:",
+                    value=st.session_state.photo_teaching_script,
+                    height=script_height,
+                    key=f"photo_script_{st.session_state.photo_gen_id}",
+                )
+
+                col_ss, col_si = st.columns([1, 3])
+                with col_ss:
+                    if st.button("Save Script Changes", key=f"photo_save_script_{st.session_state.photo_gen_id}"):
+                        if edited_script != st.session_state.photo_teaching_script:
+                            st.session_state.photo_teaching_script = edited_script
+                            st.session_state.photo_teaching_audio = None
+                            st.session_state.photo_final_video = None
+                            st.rerun()
+                with col_si:
+                    if edited_script != st.session_state.photo_teaching_script:
+                        st.caption("Unsaved changes — click Save Script Changes")
+
+                # Final video with narration
+                st.markdown("---")
+                st.subheader("Create Final Video with Narration")
+
+                col_m_btn, col_m_info = st.columns([1, 2])
+
+                with col_m_btn:
+                    if st.button("Create Synchronized Video", type="primary", key="photo_merge"):
+                        with st.spinner("Merging animation with narration..."):
+                            st.session_state.photo_final_video = None
+                            st.session_state.photo_final_error = None
+
+                            ok, result = merge_video_audio_api(
+                                st.session_state.photo_video_path,
+                                st.session_state.photo_teaching_script,
+                            )
+                            if ok:
+                                st.session_state.photo_final_video = result
+                            else:
+                                st.session_state.photo_final_error = result
+                        st.rerun()
+
+                with col_m_info:
+                    st.info("Video and audio will be perfectly synchronized")
+
+                if st.session_state.photo_final_error:
+                    st.error("Video merging failed")
+                    with st.expander("View Error Details", expanded=True):
+                        st.code(st.session_state.photo_final_error, language="text")
+
+                if st.session_state.photo_final_video and os.path.exists(st.session_state.photo_final_video):
+                    st.markdown("---")
+                    st.subheader("Final Video with Audio Narration")
+                    st.success("Video and audio are now synchronized!")
+                    st.video(st.session_state.photo_final_video)
+
+                    with open(st.session_state.photo_final_video, "rb") as fv:
+                        st.download_button(
+                            label="Download Final Video",
+                            data=fv.read(),
+                            file_name="photo_final_video.mp4",
+                            mime="video/mp4",
+                            key="photo_dl_final",
+                        )
+
+                # Audio preview
+                st.markdown("---")
+                st.subheader("Audio Only (Preview)")
+
+                col_a1, col_a2 = st.columns([1, 1])
+
+                with col_a1:
+                    if st.button("Generate Audio Preview", key="photo_audio_btn"):
+                        with st.spinner("Converting to speech..."):
+                            st.session_state.photo_teaching_audio = generate_tts_api(
+                                st.session_state.photo_teaching_script
+                            )
+                        st.rerun()
+
+                with col_a2:
+                    if st.session_state.photo_teaching_audio:
+                        st.success("Audio ready!")
+
+                if st.session_state.photo_teaching_audio and os.path.exists(st.session_state.photo_teaching_audio):
+                    st.audio(st.session_state.photo_teaching_audio, format="audio/mp3")
+
+                    with open(st.session_state.photo_teaching_audio, "rb") as af:
+                        st.download_button(
+                            label="Download Audio Only",
+                            data=af.read(),
+                            file_name="photo_teaching_audio.mp3",
+                            mime="audio/mp3",
+                            key="photo_dl_audio",
                         )
 
 
