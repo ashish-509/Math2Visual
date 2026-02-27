@@ -274,6 +274,18 @@ class RegenerateAndCompileResponse(BaseModel):
     message: str = ""                 # Human-readable result summary
 
 
+# Image extraction (Photo to Animation feature)
+class ImageExtractionRequest(BaseModel):
+    image_base64: str                  # Raw base64 string of the uploaded image
+    mime_type: str = "image/png"       # MIME type (image/png, image/jpeg, etc.)
+
+
+class ImageExtractionResponse(BaseModel):
+    success: bool
+    extracted_text: str = ""
+    message: str = ""
+
+
 # Cached Resources (singleton pattern)
 
 # Cache for pipeline instances
@@ -1774,6 +1786,37 @@ async def generate_code_endpoint(request: CodeGenerationRequest):
         return CodeGenerationResponse(success=True, code=result, message="Code generated successfully")
     else:
         return CodeGenerationResponse(success=False, code=f"# Error: {result}", message=result)
+
+
+@app.post("/extract_from_image", response_model=ImageExtractionResponse)
+async def extract_from_image_endpoint(request: ImageExtractionRequest):
+    # Use a vision model to read a photo of a math problem.
+    logger.info("Image extraction request received")
+
+    if not GROQ_AVAILABLE:
+        return ImageExtractionResponse(
+            success=False, message="Groq client not available"
+        )
+
+    def _do_extraction():
+        # Reuse the codellama client — the vision method uses its own model
+        client = get_groq_client_cached("codellama")
+        if client is None:
+            return False, "Failed to initialise Groq client"
+        extracted = client.extract_from_image(
+            request.image_base64, request.mime_type
+        )
+        if extracted.startswith("Error"):
+            return False, extracted
+        return True, extracted
+
+    success, text = await asyncio.to_thread(_do_extraction)
+
+    if success:
+        return ImageExtractionResponse(
+            success=True, extracted_text=text, message="Extraction complete"
+        )
+    return ImageExtractionResponse(success=False, message=text)
 
 
 @app.post("/compile_video", response_model=VideoCompilationResponse)
