@@ -697,6 +697,67 @@ Output ONLY the corrected Python code, starting with 'from manim import *'."""
             logger.error(f"Error during regeneration: {e}")
             return f"# Error regenerating code: {str(e)}"
 
+    def extract_from_image(self, image_base64, mime_type="image/png"):
+        # Use a vision model to read a photo of a math problem and return a plain-text description of what it contains.
+
+        # Vision needs a dedicated model — not the one stored on self
+        vision_model = "llama-3.2-90b-vision-preview"
+
+        system_prompt = (
+            "You are a helpful assistant that reads photos of math problems. "
+            "Your job is to look at the image and output a clear, concise "
+            "natural-language description of what the problem is about, "
+            "what is being asked, and outline the solution steps shown.\n\n"
+            "RULES:\n"
+            "1. Describe the math topic (algebra, geometry, calculus, etc.)\n"
+            "2. State the problem clearly in words\n"
+            "3. List the solution steps if visible\n"
+            "4. Use plain English — no LaTeX, no code\n"
+            "5. If anything is unclear in the image, make a reasonable guess "
+            "and note what was hard to read\n"
+            "6. Keep the description under 200 words"
+        )
+
+        # Build the multimodal message with image
+        data_uri = f"data:{mime_type};base64,{image_base64}"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Look at this photo of a math problem. "
+                            "Describe what it contains so I can turn it "
+                            "into an animated video."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_uri},
+                    },
+                ],
+            },
+        ]
+
+        try:
+            logger.info(f"Extracting math from image with {vision_model}...")
+            response = self.client.chat.completions.create(
+                model=vision_model,
+                messages=messages,
+                max_tokens=1024,
+                temperature=0.3,
+            )
+            extracted = response.choices[0].message.content.strip()
+            logger.info("Image extraction complete")
+            return extracted
+
+        except Exception as e:
+            logger.error(f"Vision API error: {e}")
+            return f"Error reading image: {str(e)}"
+
     def get_status(self):
         """
         Get the current status of the Groq client.
