@@ -700,8 +700,8 @@ Output ONLY the corrected Python code, starting with 'from manim import *'."""
     def extract_from_image(self, image_base64, mime_type="image/png"):
         # Use a vision model to read a photo of a math problem and return a plain-text description of what it contains.
 
-        # Vision needs a dedicated model — not the one stored on self
-        vision_model = "llama-3.2-90b-vision-preview"
+        # Llama 4 Scout supports native multimodal (vision) input on Groq
+        vision_model = "meta-llama/llama-4-scout-17b-16e-instruct"
 
         system_prompt = (
             "You are a helpful assistant that reads photos of math problems. "
