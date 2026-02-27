@@ -987,9 +987,7 @@ elif st.session_state.current_page == "Photo to Animation":
         "an animated explainer video."
     )
 
-    # ------------------------------------------------------------------
     # Step 1 — Upload the image
-    # ------------------------------------------------------------------
     uploaded_file = st.file_uploader(
         "Upload a photo of a math problem",
         type=["jpg", "jpeg", "png"],
@@ -1004,9 +1002,7 @@ elif st.session_state.current_page == "Photo to Animation":
         image_bytes = uploaded_file.getvalue()
         mime_type = uploaded_file.type or "image/png"
 
-        # ------------------------------------------------------------------
         # Step 2 — Extract math content from the photo
-        # ------------------------------------------------------------------
         if st.button("Extract Math Content", type="primary"):
             if not health:
                 st.error("Backend not connected. Please start the backend server.")
@@ -1033,9 +1029,7 @@ elif st.session_state.current_page == "Photo to Animation":
 
                 st.rerun()
 
-    # ------------------------------------------------------------------
     # Step 3 — Let the user review and edit the extracted text
-    # ------------------------------------------------------------------
     if st.session_state.photo_extracted_text:
         st.subheader("Extracted Content")
         st.caption(
@@ -1078,9 +1072,7 @@ elif st.session_state.current_page == "Photo to Animation":
 
                 st.rerun()
 
-    # ------------------------------------------------------------------
     # Step 4 — Show generated code with edit option
-    # ------------------------------------------------------------------
     if st.session_state.photo_generated_code:
         st.markdown("---")
         st.subheader("Generated Manim Code")
@@ -1114,9 +1106,7 @@ elif st.session_state.current_page == "Photo to Animation":
                 if edited_code != st.session_state.photo_generated_code:
                     st.caption("Unsaved changes — click Save Changes")
 
-        # ------------------------------------------------------------------
         # Step 5 — Compile the video
-        # ------------------------------------------------------------------
         st.markdown("---")
         col_vid_btn, col_vid_info = st.columns([1, 2])
 
@@ -1180,9 +1170,7 @@ elif st.session_state.current_page == "Photo to Animation":
             with st.expander("View Error Details", expanded=True):
                 st.code(st.session_state.photo_video_error, language="text")
 
-        # ------------------------------------------------------------------
         # Step 6 — Display the video + teaching script + narration
-        # ------------------------------------------------------------------
         if st.session_state.photo_video_path and os.path.exists(st.session_state.photo_video_path):
             st.markdown("---")
             st.subheader("Generated Animation")
