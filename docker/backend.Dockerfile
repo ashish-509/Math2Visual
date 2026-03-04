@@ -1,0 +1,38 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# system deps: manim needs latex, ffmpeg, cairo; build tools for some pip packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
+    texlive-fonts-extra \
+    texlive-science \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libglib2.0-dev \
+    portaudio19-dev \
+    pkg-config \
+    gcc \
+    g++ \
+    libc6-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/ ./backend/
+COPY src/ ./src/
+COPY crawler/ ./crawler/
+COPY data/ ./data/
+
+RUN mkdir -p outputs
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+EXPOSE 8000
+
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
