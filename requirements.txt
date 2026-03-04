@@ -20,11 +20,6 @@ attrs==25.4.0
     # via
     #   jsonschema
     #   referencing
-audioop-lts==0.2.2
-    # via
-    #   manim
-    #   speechrecognition
-    #   standard-aifc
 av==16.1.0
     # via manim
 backoff==2.2.1
