@@ -1,27 +1,32 @@
-FROM python:3.11-slim
 
+# Multi-stage build for backend: builder and runtime stages
+
+FROM python:3.11-slim AS builder
 WORKDIR /app
 
-# system deps: manim needs latex, ffmpeg, cairo; build tools for some pip packages
+# Install build dependencies and system libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    texlive-latex-extra \
-    texlive-fonts-recommended \
-    texlive-fonts-extra \
-    texlive-science \
-    libcairo2-dev \
-    libpango1.0-dev \
-    libglib2.0-dev \
-    portaudio19-dev \
-    pkg-config \
-    gcc \
-    g++ \
-    libc6-dev \
-    git \
+    gcc g++ libc6-dev git pkg-config \
+    ffmpeg texlive-latex-extra texlive-fonts-recommended texlive-fonts-extra texlive-science \
+    libcairo2-dev libpango1.0-dev libglib2.0-dev portaudio19-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+
+# ---
+FROM python:3.11-slim AS runtime
+WORKDIR /app
+
+# Install only runtime system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg texlive-latex-extra texlive-fonts-recommended texlive-fonts-extra texlive-science \
+    libcairo2-dev libpango1.0-dev libglib2.0-dev portaudio19-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /wheels /wheels
+COPY requirements.txt .
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
 
 COPY backend/ ./backend/
 COPY src/ ./src/
