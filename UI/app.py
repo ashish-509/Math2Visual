@@ -433,8 +433,8 @@ def capture_audio_input():
             st.info("Adjusting for background noise...")
             recognizer.adjust_for_ambient_noise(source, duration=1)
             
-            st.info("Listening for 10 seconds... (Speak now)")
-            audio_data = recognizer.listen(source, timeout=10, phrase_time_limit=7)
+            st.info("Listening for 15 seconds... (Speak now)")
+            audio_data = recognizer.listen(source, timeout=15, phrase_time_limit=12)
             
             st.info("Processing your speech...")
             
@@ -443,7 +443,7 @@ def capture_audio_input():
             return text.lower()
             
     except sr.WaitTimeoutError:
-        return "Error: No speech detected within 10 seconds."
+        return "Error: No speech detected within 15 seconds."
     except sr.UnknownValueError:
         return "Error: Could not understand the audio."
     except Exception as e:
