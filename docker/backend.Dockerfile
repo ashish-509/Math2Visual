@@ -28,10 +28,14 @@ COPY --from=builder /wheels /wheels
 COPY requirements.txt .
 RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
 
-COPY backend/ ./backend/
-COPY src/ ./src/
-COPY crawler/ ./crawler/
-COPY data/ ./data/
+# non-root user for security
+RUN useradd --create-home appuser
+USER appuser
+
+COPY --chown=appuser:appuser backend/ ./backend/
+COPY --chown=appuser:appuser src/ ./src/
+COPY --chown=appuser:appuser crawler/ ./crawler/
+COPY --chown=appuser:appuser data/ ./data/
 
 RUN mkdir -p outputs
 
