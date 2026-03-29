@@ -798,182 +798,44 @@ if st.session_state.current_page == "Studio":
         
         # Display the video
         if st.session_state.video_path and os.path.exists(st.session_state.video_path):
-            st.markdown("---")
-            st.subheader("Generated Animation")
-            
-            st.video(st.session_state.video_path)
-            
-            # Download button
-            with open(st.session_state.video_path, "rb") as video_file:
-                video_bytes = video_file.read()
-                st.download_button(
-                    label="Download MP4",
-                    data=video_bytes,
-                    file_name=os.path.basename(st.session_state.video_path),
-                    mime="video/mp4"
-                )
-            
-            # Teaching Script Section
-            st.markdown("---")
-            st.subheader("Teaching Script")
-            
-            col_teach_btn, col_teach_info = st.columns([1, 2])
-            
-            with col_teach_btn:
-                if st.button("Generate Teaching Script"):
-                    # Use stored original prompt, fallback to current input, or extract from code
-                    prompt_for_script = st.session_state.original_prompt or user_input
-                    
-                    # If still no prompt, try to extract topic from the code
-                    if not prompt_for_script or not prompt_for_script.strip():
-                        # Extract class name from code as a fallback description
-                        import re
-                        code = st.session_state.generated_code
-                        class_match = re.search(r'class\s+(\w+)', code)
-                        if class_match:
-                            class_name = class_match.group(1)
-                            # Convert CamelCase to readable text
-                            readable_name = re.sub(r'([A-Z])', r' \1', class_name).strip()
-                            prompt_for_script = f"Explain the concept shown in this {readable_name} animation"
-                    
-                    if not prompt_for_script or not prompt_for_script.strip():
-                        st.error("No description available. Please enter a description in the text area above.")
-                    else:
-                        with st.spinner("Creating explanation matched to video..."):
-                            # Get video duration for script timing
-                            video_duration = get_video_duration_api(st.session_state.video_path)
-                            
-                            success, result = generate_teaching_script_api(
-                                prompt_for_script,
-                                st.session_state.generated_code,
-                                st.session_state.model_choice,
-                                video_duration
-                            )
-                            
-                            if success:
-                                st.session_state.teaching_script = result
-                            else:
-                                st.error(result)
-                        
-                        st.rerun()
-            
-            with col_teach_info:
-                # Show video duration info
-                video_duration = get_video_duration_api(st.session_state.video_path)
-                if video_duration > 0:
-                    st.info(f"Video duration: {video_duration:.1f}s - Script will be generated to match")
-                else:
-                    st.info("The AI will explain the animation in simple words")
-            
-            # Display teaching script
-            if st.session_state.teaching_script:
-                st.markdown("---")
-                st.subheader("Teaching Explanation")
-                
-                # Calculate dynamic height based on content lines
-                script_lines = st.session_state.teaching_script.count('\n') + 1
-                script_height = min(max(80, script_lines * 24), 250)  # Min 80, max 250
-                
-                edited_script = st.text_area(
-                    "Teaching explanation:",
-                    value=st.session_state.teaching_script,
-                    height=script_height,
-                    key=f"teaching_script_editor_{st.session_state.generation_id}"
-                )
-                
-                col_save_script, col_script_info = st.columns([1, 3])
-                with col_save_script:
-                    if st.button("Save Script Changes", key=f"save_script_{st.session_state.generation_id}"):
-                        if edited_script != st.session_state.teaching_script:
-                            st.session_state.teaching_script = edited_script
-                            st.session_state.teaching_audio_path = None
-                            st.session_state.final_video_path = None
-                            st.rerun()
-                with col_script_info:
-                    if edited_script != st.session_state.teaching_script:
-                        st.caption("Unsaved changes - click Save Script Changes")
-                
-                # Create Final Synchronized Video Section
-                st.markdown("---")
-                st.subheader("Create Final Video with Narration")
-                
-                col_merge_btn, col_merge_info = st.columns([1, 2])
-                
-                with col_merge_btn:
-                    if st.button("Create Synchronized Video", type="primary"):
-                        with st.spinner("Merging animation with narration..."):
-                            st.session_state.final_video_path = None
-                            st.session_state.final_video_error = None
-                            
-                            success, result = merge_video_audio_api(
-                                st.session_state.video_path,
-                                st.session_state.teaching_script
-                            )
-                            
-                            if success:
-                                st.session_state.final_video_path = result
-                            else:
-                                st.session_state.final_video_error = result
-                        
-                        st.rerun()
-                
-                with col_merge_info:
-                    st.info("Video and audio will be perfectly synchronized")
-                
-                # Display final video error if any
-                if st.session_state.final_video_error:
-                    st.error("Video Merging Failed")
-                    with st.expander("View Error Details", expanded=True):
-                        st.code(st.session_state.final_video_error, language="text")
-                
-                # Display the final synchronized video
-                if st.session_state.final_video_path and os.path.exists(st.session_state.final_video_path):
-                    st.markdown("---")
-                    st.subheader("Final Video with Audio Narration")
-                    st.success("Video and audio are now synchronized!")
-                    
-                    st.video(st.session_state.final_video_path)
-                    
-                    # Download button for final video
-                    with open(st.session_state.final_video_path, "rb") as video_file:
-                        video_bytes = video_file.read()
-                        st.download_button(
-                            label="Download Final Video",
-                            data=video_bytes,
-                            file_name=os.path.basename(st.session_state.final_video_path),
-                            mime="video/mp4"
-                        )
-                
-                # Audio-only playback section (optional)
-                st.markdown("---")
-                st.subheader("Audio Only (Preview)")
-                
-                col_audio1, col_audio2 = st.columns([1, 1])
-                
-                with col_audio1:
-                    if st.button("Generate Audio Preview"):
-                        with st.spinner("Converting to speech..."):
-                            st.session_state.teaching_audio_path = generate_tts_api(
-                                st.session_state.teaching_script
-                            )
-                        st.rerun()
-                
-                with col_audio2:
-                    if st.session_state.teaching_audio_path:
-                        st.success("Audio ready!")
-                
-                # Play audio
-                if st.session_state.teaching_audio_path and os.path.exists(st.session_state.teaching_audio_path):
-                    st.audio(st.session_state.teaching_audio_path, format="audio/mp3")
-                    
-                    with open(st.session_state.teaching_audio_path, "rb") as audio_file:
-                        audio_bytes = audio_file.read()
-                        st.download_button(
-                            label="Download Audio Only",
-                            data=audio_bytes,
-                            file_name="teaching_script_audio.mp3",
-                            mime="audio/mp3"
-                        )
+            from shared_components import (
+                render_video_player, render_teaching_script_section,
+                render_merge_section, render_audio_preview,
+            )
+
+            render_video_player(
+                st.session_state.video_path,
+                download_name=os.path.basename(st.session_state.video_path),
+                dl_key="studio_dl_mp4",
+            )
+
+            render_teaching_script_section(
+                video_path=st.session_state.video_path,
+                generated_code=st.session_state.generated_code,
+                model_choice=st.session_state.model_choice,
+                prompt_text=st.session_state.original_prompt or user_input,
+                script_key="teaching_script",
+                gen_id=st.session_state.generation_id,
+                prefix="studio",
+                get_video_duration_api=get_video_duration_api,
+                generate_teaching_script_api=generate_teaching_script_api,
+            )
+
+            render_merge_section(
+                video_path=st.session_state.video_path,
+                script_key="teaching_script",
+                final_video_key="final_video_path",
+                final_error_key="final_video_error",
+                prefix="studio",
+                merge_video_audio_api=merge_video_audio_api,
+            )
+
+            render_audio_preview(
+                script_key="teaching_script",
+                audio_key="teaching_audio_path",
+                prefix="studio",
+                generate_tts_api=generate_tts_api,
+            )
 
 
 # PHOTO TO ANIMATION PAGE
@@ -1172,156 +1034,45 @@ elif st.session_state.current_page == "Photo to Animation":
 
         # Step 6 — Display the video + teaching script + narration
         if st.session_state.photo_video_path and os.path.exists(st.session_state.photo_video_path):
-            st.markdown("---")
-            st.subheader("Generated Animation")
-            st.video(st.session_state.photo_video_path)
+            from shared_components import (
+                render_video_player, render_teaching_script_section,
+                render_merge_section, render_audio_preview,
+            )
 
-            with open(st.session_state.photo_video_path, "rb") as vf:
-                st.download_button(
-                    label="Download MP4",
-                    data=vf.read(),
-                    file_name="photo_animation.mp4",
-                    mime="video/mp4",
-                    key="photo_dl_mp4",
-                )
+            render_video_player(
+                st.session_state.photo_video_path,
+                download_name="photo_animation.mp4",
+                dl_key="photo_dl_mp4",
+            )
 
-            # Teaching script
-            st.markdown("---")
-            st.subheader("Teaching Script")
+            render_teaching_script_section(
+                video_path=st.session_state.photo_video_path,
+                generated_code=st.session_state.photo_generated_code,
+                model_choice=st.session_state.model_choice,
+                prompt_text=(st.session_state.photo_confirmed_prompt
+                             or st.session_state.photo_extracted_text),
+                script_key="photo_teaching_script",
+                gen_id=st.session_state.photo_gen_id,
+                prefix="photo",
+                get_video_duration_api=get_video_duration_api,
+                generate_teaching_script_api=generate_teaching_script_api,
+            )
 
-            col_t_btn, col_t_info = st.columns([1, 2])
+            render_merge_section(
+                video_path=st.session_state.photo_video_path,
+                script_key="photo_teaching_script",
+                final_video_key="photo_final_video",
+                final_error_key="photo_final_error",
+                prefix="photo",
+                merge_video_audio_api=merge_video_audio_api,
+            )
 
-            with col_t_btn:
-                if st.button("Generate Teaching Script", key="photo_teach_btn"):
-                    prompt_text = (
-                        st.session_state.photo_confirmed_prompt
-                        or st.session_state.photo_extracted_text
-                    )
-                    if not prompt_text.strip():
-                        st.error("No description available.")
-                    else:
-                        with st.spinner("Creating explanation matched to video..."):
-                            dur = get_video_duration_api(st.session_state.photo_video_path)
-                            ok, script = generate_teaching_script_api(
-                                prompt_text,
-                                st.session_state.photo_generated_code,
-                                st.session_state.model_choice,
-                                dur,
-                            )
-                            if ok:
-                                st.session_state.photo_teaching_script = script
-                            else:
-                                st.error(script)
-                        st.rerun()
-
-            with col_t_info:
-                dur = get_video_duration_api(st.session_state.photo_video_path)
-                if dur > 0:
-                    st.info(f"Video duration: {dur:.1f}s — script will match this")
-                else:
-                    st.info("The AI will explain the animation in simple words")
-
-            # Display & edit teaching script
-            if st.session_state.photo_teaching_script:
-                st.markdown("---")
-                st.subheader("Teaching Explanation")
-
-                script_lines = st.session_state.photo_teaching_script.count("\n") + 1
-                script_height = min(max(80, script_lines * 24), 250)
-
-                edited_script = st.text_area(
-                    "Teaching explanation:",
-                    value=st.session_state.photo_teaching_script,
-                    height=script_height,
-                    key=f"photo_script_{st.session_state.photo_gen_id}",
-                )
-
-                col_ss, col_si = st.columns([1, 3])
-                with col_ss:
-                    if st.button("Save Script Changes", key=f"photo_save_script_{st.session_state.photo_gen_id}"):
-                        if edited_script != st.session_state.photo_teaching_script:
-                            st.session_state.photo_teaching_script = edited_script
-                            st.session_state.photo_teaching_audio = None
-                            st.session_state.photo_final_video = None
-                            st.rerun()
-                with col_si:
-                    if edited_script != st.session_state.photo_teaching_script:
-                        st.caption("Unsaved changes — click Save Script Changes")
-
-                # Final video with narration
-                st.markdown("---")
-                st.subheader("Create Final Video with Narration")
-
-                col_m_btn, col_m_info = st.columns([1, 2])
-
-                with col_m_btn:
-                    if st.button("Create Synchronized Video", type="primary", key="photo_merge"):
-                        with st.spinner("Merging animation with narration..."):
-                            st.session_state.photo_final_video = None
-                            st.session_state.photo_final_error = None
-
-                            ok, result = merge_video_audio_api(
-                                st.session_state.photo_video_path,
-                                st.session_state.photo_teaching_script,
-                            )
-                            if ok:
-                                st.session_state.photo_final_video = result
-                            else:
-                                st.session_state.photo_final_error = result
-                        st.rerun()
-
-                with col_m_info:
-                    st.info("Video and audio will be perfectly synchronized")
-
-                if st.session_state.photo_final_error:
-                    st.error("Video merging failed")
-                    with st.expander("View Error Details", expanded=True):
-                        st.code(st.session_state.photo_final_error, language="text")
-
-                if st.session_state.photo_final_video and os.path.exists(st.session_state.photo_final_video):
-                    st.markdown("---")
-                    st.subheader("Final Video with Audio Narration")
-                    st.success("Video and audio are now synchronized!")
-                    st.video(st.session_state.photo_final_video)
-
-                    with open(st.session_state.photo_final_video, "rb") as fv:
-                        st.download_button(
-                            label="Download Final Video",
-                            data=fv.read(),
-                            file_name="photo_final_video.mp4",
-                            mime="video/mp4",
-                            key="photo_dl_final",
-                        )
-
-                # Audio preview
-                st.markdown("---")
-                st.subheader("Audio Only (Preview)")
-
-                col_a1, col_a2 = st.columns([1, 1])
-
-                with col_a1:
-                    if st.button("Generate Audio Preview", key="photo_audio_btn"):
-                        with st.spinner("Converting to speech..."):
-                            st.session_state.photo_teaching_audio = generate_tts_api(
-                                st.session_state.photo_teaching_script
-                            )
-                        st.rerun()
-
-                with col_a2:
-                    if st.session_state.photo_teaching_audio:
-                        st.success("Audio ready!")
-
-                if st.session_state.photo_teaching_audio and os.path.exists(st.session_state.photo_teaching_audio):
-                    st.audio(st.session_state.photo_teaching_audio, format="audio/mp3")
-
-                    with open(st.session_state.photo_teaching_audio, "rb") as af:
-                        st.download_button(
-                            label="Download Audio Only",
-                            data=af.read(),
-                            file_name="photo_teaching_audio.mp3",
-                            mime="audio/mp3",
-                            key="photo_dl_audio",
-                        )
+            render_audio_preview(
+                script_key="photo_teaching_script",
+                audio_key="photo_teaching_audio",
+                prefix="photo",
+                generate_tts_api=generate_tts_api,
+            )
 
 
 # CHATBOT PAGE - Manim Syntax Assistant
