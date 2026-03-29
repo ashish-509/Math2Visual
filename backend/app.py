@@ -35,8 +35,16 @@ sys.path.insert(0, PROJECT_ROOT)
 # Load environment variables
 load_dotenv()
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Centralized config + structured JSON logging
+from src.config import (
+    QUALITY_FLAGS, DEFAULT_QUALITY, MANIM_RENDER_TIMEOUT, MANIM_DRYRUN_TIMEOUT,
+    FFMPEG_TIMEOUT, FFPROBE_TIMEOUT, MAX_WORKERS, MAX_RETRIES_COMPILE,
+    MAX_RETRIES_REGEN, SPEAKING_RATE_WPS, NARRATION_MAX_TOKENS,
+    NARRATION_TEMPERATURE, AUDIO_BITRATE, AUDIO_CODEC,
+    SPEED_FACTOR_MIN, SPEED_FACTOR_MAX, OUTPUTS_DIR,
+)
+from src.logging_utils import setup_logging, new_request_id, log_timing
+setup_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -74,6 +82,57 @@ except ImportError as e:
     CHATBOT_AVAILABLE = False
     logger.warning(f"Manim chatbot not available: {e}")
 
+# Pre-render validation and error classification
+try:
+    from src.validation.code_validator import PreRenderValidator
+    from src.validation.error_classifier import ErrorClassifier
+    VALIDATOR_AVAILABLE = True
+    _pre_render_validator = PreRenderValidator(timeout=MANIM_DRYRUN_TIMEOUT)
+except ImportError as e:
+    VALIDATOR_AVAILABLE = False
+    _pre_render_validator = None
+    logger.warning(f"Validation module not available: {e}")
+
+# Render cache (skip re-rendering identical code)
+try:
+    from src.rendering import RenderCache
+    _render_cache = RenderCache()
+except ImportError as e:
+    _render_cache = None
+    logger.warning(f"Render cache not available: {e}")
+
+# Template hints for code generation
+try:
+    from src.codegen import get_template_hint
+    TEMPLATES_AVAILABLE = True
+except ImportError as e:
+    TEMPLATES_AVAILABLE = False
+    logger.warning(f"Templates not available: {e}")
+
+# RAG query enhancer
+try:
+    from src.rag.query_enhancer import enhance_query
+    QUERY_ENHANCER_AVAILABLE = True
+except ImportError as e:
+    QUERY_ENHANCER_AVAILABLE = False
+    logger.warning(f"Query enhancer not available: {e}")
+
+# Scene-aware timing for teaching-script generation
+try:
+    from src.codegen.scene_timer import parse_scene_timing
+    SCENE_TIMER_AVAILABLE = True
+except ImportError as e:
+    SCENE_TIMER_AVAILABLE = False
+    logger.warning(f"Scene timer not available: {e}")
+
+# Edge-TTS engine (SSML pauses, higher quality voice)
+try:
+    from src.tts.edge_tts_engine import generate_speech as edge_tts_generate
+    EDGE_TTS_AVAILABLE = True
+except ImportError as e:
+    EDGE_TTS_AVAILABLE = False
+    logger.warning(f"Edge-TTS not available, using gTTS: {e}")
+
 # Documentation sync (for fetching latest Manim docs from GitHub)
 try:
     from crawler.docs_sync import get_docs_sync, sync_manim_docs
@@ -102,7 +161,7 @@ app.add_middleware(
 
 
 # Thread pool for running blocking operations without blocking the event loop
-executor = ThreadPoolExecutor(max_workers=4)
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 
 # Startup event - preload models to eliminate cold start delay
@@ -1042,26 +1101,29 @@ def generate_code_with_model(prompt: str, model_choice: str) -> tuple:
             return False, "Groq client not available"
         
         try:
-            # Get RAG context first
+            # Get RAG context (enhance query for better retrieval)
             rag = get_rag_pipeline_cached()
             context = ""
             if rag and rag.is_indexed:
-                context = rag.retrieve_context(prompt)
+                search_query = enhance_query(prompt) if QUERY_ENHANCER_AVAILABLE else prompt
+                context = rag.retrieve_context(search_query)
             
-            # Build augmented prompt with RAG context
+            # Get template hint if one matches
+            template_hint = get_template_hint(prompt) if TEMPLATES_AVAILABLE else ""
+            
+            # Build augmented prompt with RAG context + template hint
             if context:
                 augmented_prompt = f"""Use the following Manim documentation as reference:
 
 === MANIM DOCUMENTATION ===
 {context}
 === END DOCUMENTATION ===
-
+{template_hint}
 User Request: {prompt}
 
 Generate complete, working Manim code based on the documentation above."""
             else:
-                augmented_prompt = f"""
-
+                augmented_prompt = f"""{template_hint}
 User Request: {prompt}"""
             
             # Get Groq client
@@ -1099,13 +1161,23 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
     if not class_name:
         return False, "Could not find a Scene class in the code"
     
+    # Check render cache first — skip the whole render if we've done this before
+    if _render_cache is not None:
+        cached_path = _render_cache.get(code, quality)
+        if cached_path:
+            return True, cached_path
+    
+    # Pre-render validation: catch runtime errors before the expensive full render
+    if _pre_render_validator is not None:
+        check = _pre_render_validator.validate(code)
+        if not check["passed"]:
+            stage = check["stage"]
+            error = check["error"]
+            logger.warning(f"Pre-render validation failed at '{stage}': {error[:200]}")
+            return False, f"Pre-render check failed ({stage}):\n{error}"
+    
     # Quality flags - use low quality for faster preview, medium/high for final
-    quality_flags = {
-        "low": "-ql",   
-        "medium": "-qm",   
-        "high": "-qh"      
-    }
-    quality_flag = quality_flags.get(quality, "-qm")
+    quality_flag = QUALITY_FLAGS.get(quality, "-qm")
     
     # Create temp directory
     temp_dir = tempfile.mkdtemp(prefix="manim_")
@@ -1136,7 +1208,7 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
             cmd,
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=MANIM_RENDER_TIMEOUT
         )
         
         if result.stdout:
@@ -1169,7 +1241,7 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
                     code = fixed_code  # Keep track so we copy the right version later
 
                     logger.info("Retrying Manim compilation after MathTex to Text() conversion...")
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=MANIM_RENDER_TIMEOUT)
 
                     if result.stdout:
                         logger.info(f"Auto-fix retry stdout: {result.stdout}")
@@ -1216,6 +1288,10 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
         
         final_path = os.path.join(output_dir, f"{class_name}.mp4")
         shutil.copy2(video_path, final_path)
+        
+        # Store in render cache for next time
+        if _render_cache is not None:
+            _render_cache.put(code, quality, final_path)
         
         logger.info(f"Video saved to: {final_path}")
         return True, final_path
@@ -1330,6 +1406,20 @@ def regenerate_code_with_error(original_prompt: str, model_choice: str,
         # Prepend the constraint so the model sees it first
         error_message = latex_constraint + error_message
 
+    # Classify the error and build targeted fix instructions for the LLM
+    targeted_guidance = ""
+    if VALIDATOR_AVAILABLE:
+        error_type, fix_instructions = ErrorClassifier.classify_and_instruct(error_message)
+        logger.info(f"Error classified as: {error_type.value}")
+        targeted_guidance = (
+            f"\n\n=== ERROR CLASSIFICATION: {error_type.value.upper()} ===\n"
+            f"{fix_instructions}\n"
+            f"=== END CLASSIFICATION ===\n"
+        )
+    
+    # Append targeted guidance to the error message so the LLM knows what to fix
+    augmented_error = error_message + targeted_guidance
+
     # Use Groq client for regeneration
     if model_choice in ["CodeLlama-34B", "Phi-2"]:
         if not GROQ_AVAILABLE:
@@ -1342,11 +1432,11 @@ def regenerate_code_with_error(original_prompt: str, model_choice: str,
             if groq_client is None:
                 return False, "Failed to get Groq client"
             
-            # Call the regenerate method with error feedback
+            # Call the regenerate method with classified error feedback
             code = groq_client.regenerate_with_error(
                 original_prompt=original_prompt,
                 context=context,
-                error_message=error_message,
+                error_message=augmented_error,
                 max_tokens=2048,
                 temperature=0.4
             )
@@ -1372,11 +1462,11 @@ def regenerate_code_with_error(original_prompt: str, model_choice: str,
             if pipeline is None:
                 return False, "Could not get finetuned pipeline"
             
-            # Build error feedback prompt
+            # Build error feedback prompt with classified guidance
             error_prompt = f"""{original_prompt}
 
 IMPORTANT: The previous attempt failed with this error:
-{error_message}
+{augmented_error}
 
 Please generate corrected code that fixes this error."""
             
@@ -1403,9 +1493,8 @@ def generate_teaching_script_text(description: str, code: str, model_choice: str
         return False, "Please generate the animation code first"
     
     # Calculate target word count based on video duration
-    # Average speaking rate is about 150 words per minute (2.5 words per second)
     if video_duration > 0:
-        target_words = int(video_duration * 2.5)
+        target_words = int(video_duration * SPEAKING_RATE_WPS)
         duration_instruction = f"""
 CRITICAL TIMING REQUIREMENT:
 - The video is exactly {video_duration:.1f} seconds long
@@ -1415,6 +1504,15 @@ CRITICAL TIMING REQUIREMENT:
 - Do not exceed {target_words + 20} words or go below {max(target_words - 20, 30)} words"""
     else:
         duration_instruction = ""
+
+    # inject scene-level timing info so the LLM knows what happens when
+    timing_block = ""
+    if SCENE_TIMER_AVAILABLE:
+        try:
+            timeline = parse_scene_timing(code)
+            timing_block = timeline.as_prompt_block()
+        except Exception as e:
+            logger.debug(f"Scene timer skipped: {e}")
     
     # Build the teaching prompt - designed for perfect audio-video sync
     teaching_prompt = f"""You are creating a voiceover script for a math teaching video animation.
@@ -1439,6 +1537,7 @@ Animation code (study this to understand WHEN visuals appear):
 {code}
 ```
 {duration_instruction}
+{timing_block}
 
 ==============================================
                               TIMING RULES
@@ -1510,7 +1609,10 @@ Now write ONLY the narration text. Start speaking immediately about the topic.""
                 return False, "Failed to initialize Groq client"
             
             # Use generate_narration() NOT generate() - this uses a narration-specific prompt
-            script = groq_client.generate_narration(teaching_prompt, max_tokens=1024, temperature=0.8)
+            script = groq_client.generate_narration(
+                teaching_prompt, max_tokens=NARRATION_MAX_TOKENS,
+                temperature=NARRATION_TEMPERATURE,
+            )
             return True, script
             
         except Exception as e:
@@ -1528,15 +1630,25 @@ def generate_tts_audio_file(text: str) -> Optional[str]:
     
     if not cleaned_text or not cleaned_text.strip():
         return None
-    
+
+    output_dir = os.path.join(PROJECT_ROOT, "outputs")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # prefer edge-tts (better voice + SSML pause support)
+    if EDGE_TTS_AVAILABLE:
+        try:
+            with NamedTemporaryFile(delete=False, suffix=".mp3", dir=output_dir) as fp:
+                out_path = fp.name
+            result = edge_tts_generate(cleaned_text, out_path)
+            if result:
+                return result
+            logger.warning("edge-tts returned None, falling back to gTTS")
+        except Exception as e:
+            logger.warning(f"edge-tts failed: {e}")
+
+    # fallback: gTTS
     try:
         tts = gTTS(text=cleaned_text, lang="en", slow=False)
-        
-        # Save to outputs directory
-        output_dir = os.path.join(PROJECT_ROOT, "outputs")
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Use temp file first, then move
         with NamedTemporaryFile(delete=False, suffix=".mp3", dir=output_dir) as fp:
             temp_path = fp.name
             tts.save(temp_path)
@@ -1557,7 +1669,7 @@ def get_media_duration(file_path: str) -> float:
             "-of", "default=noprint_wrappers=1:nokey=1",
             file_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=FFPROBE_TIMEOUT)
         if result.returncode == 0:
             return float(result.stdout.strip())
     except Exception as e:
@@ -1609,11 +1721,20 @@ def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
     os.makedirs(output_dir, exist_ok=True)
     
     # Generate audio file
-    audio_path = None
+    audio_path = os.path.join(output_dir, "temp_narration.mp3")
     try:
-        tts = gTTS(text=cleaned_audio_text, lang="en", slow=False)
-        audio_path = os.path.join(output_dir, "temp_narration.mp3")
-        tts.save(audio_path)
+        generated = False
+        # prefer edge-tts with SSML pauses for natural pacing
+        if EDGE_TTS_AVAILABLE:
+            try:
+                result = edge_tts_generate(cleaned_audio_text, audio_path)
+                if result:
+                    generated = True
+            except Exception as e:
+                logger.warning(f"edge-tts merge path failed: {e}")
+        if not generated:
+            tts = gTTS(text=cleaned_audio_text, lang="en", slow=False)
+            tts.save(audio_path)
         
         # Get durations using ffprobe
         video_duration = get_media_duration(video_path)
@@ -1630,8 +1751,8 @@ def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
         # Calculate speed factor to sync video with audio
         speed_factor = video_duration / audio_duration
         
-        # Limit speed adjustment to reasonable range (0.5x to 2x)
-        speed_factor = max(0.5, min(2.0, speed_factor))
+        # Limit speed adjustment to reasonable range
+        speed_factor = max(SPEED_FACTOR_MIN, min(SPEED_FACTOR_MAX, speed_factor))
         
         logger.info(f"Speed factor: {speed_factor:.4f}")
         
@@ -1652,8 +1773,8 @@ def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
                 "-map", "0:v:0",           # Take video stream from first input
                 "-map", "1:a:0",           # Take audio stream from second input
                 "-c:v", "copy",            # Copy video codec (no re-encode)
-                "-c:a", "aac",             # Encode audio as AAC
-                "-b:a", "192k",            # Audio bitrate
+                "-c:a", AUDIO_CODEC,
+                "-b:a", AUDIO_BITRATE,
                 final_video_path
             ]
         else:
@@ -1681,14 +1802,14 @@ def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
                 "-map", "[outv]",          # Use the filtered video
                 "-map", "1:a:0",           # Take audio from second input
             ] + encoder_opts + [
-                "-c:a", "aac",             # Encode audio as AAC
-                "-b:a", "192k",            # Audio bitrate
+                "-c:a", AUDIO_CODEC,
+                "-b:a", AUDIO_BITRATE,
                 final_video_path
             ]
         
         logger.info(f"Running ffmpeg: {' '.join(cmd)}")
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
         
         if result.returncode != 0:
             # Extract the actual error from stderr (skip the version/config header)
@@ -1775,12 +1896,16 @@ def health_check():
 
 @app.post("/generate_code", response_model=CodeGenerationResponse)
 async def generate_code_endpoint(request: CodeGenerationRequest):
-    logger.info(f"Code generation request: model={request.model_choice}, prompt={request.prompt[:50]}...")
-    
-    # Run in thread pool to avoid blocking the event loop
-    success, result = await asyncio.to_thread(
-        generate_code_with_model, request.prompt, request.model_choice
-    )
+    req_id = new_request_id()
+    logger.info("code_gen_start", extra={
+        "request_id": req_id, "model": request.model_choice,
+        "prompt_len": len(request.prompt), "endpoint": "/generate_code",
+    })
+
+    with log_timing(logger, "code_generation", req_id):
+        success, result = await asyncio.to_thread(
+            generate_code_with_model, request.prompt, request.model_choice
+        )
     
     if success:
         return CodeGenerationResponse(success=True, code=result, message="Code generated successfully")
@@ -1821,36 +1946,43 @@ async def extract_from_image_endpoint(request: ImageExtractionRequest):
 
 @app.post("/compile_video", response_model=VideoCompilationResponse)
 async def compile_video_endpoint(request: VideoCompilationRequest):
-    logger.info(f"Video compilation request: quality={request.quality}")
-    
-    # Run in thread pool - Manim compilation is CPU-bound
-    success, result = await asyncio.to_thread(
-        compile_video, request.code, request.quality
-    )
+    req_id = new_request_id()
+    logger.info("compile_start", extra={
+        "request_id": req_id, "quality": request.quality,
+        "code_len": len(request.code), "endpoint": "/compile_video",
+    })
+
+    with log_timing(logger, "video_compilation", req_id):
+        success, result = await asyncio.to_thread(
+            compile_video, request.code, request.quality
+        )
     
     if success:
         return VideoCompilationResponse(success=True, video_path=result)
     else:
+        logger.warning("compile_fail", extra={"request_id": req_id, "error": result[:200]})
         return VideoCompilationResponse(success=False, error_message=result)
 
 
 @app.post("/smart_generate", response_model=SmartGenerateResponse)
 async def smart_generate_endpoint(request: SmartGenerateRequest):
-    # If compilation fails, it automatically retries by sending the error back to the LLM for correction.
-
-    logger.info(f"Smart generate request: model={request.model_choice}, retries={request.max_retries}")
+    req_id = new_request_id()
+    logger.info("smart_gen_start", extra={
+        "request_id": req_id, "model": request.model_choice,
+        "quality": request.quality, "endpoint": "/smart_generate",
+    })
     
     # Validate max_retries (keep it reasonable)
-    max_retries = min(max(1, request.max_retries), 5)
+    max_retries = min(max(1, request.max_retries), MAX_RETRIES_COMPILE)
     
-    # Run in thread pool - this involves LLM calls and subprocess compilation
-    success, result, final_code = await asyncio.to_thread(
-        generate_and_compile_with_retry,
-        request.prompt,
-        request.model_choice,
-        request.quality,
-        max_retries
-    )
+    with log_timing(logger, "smart_generate", req_id):
+        success, result, final_code = await asyncio.to_thread(
+            generate_and_compile_with_retry,
+            request.prompt,
+            request.model_choice,
+            request.quality,
+            max_retries
+        )
     
     if success:
         return SmartGenerateResponse(
@@ -2031,12 +2163,15 @@ def get_audio(filename: str): # Download an audio file.
 
 @app.post("/merge_video_audio", response_model=MergeVideoAudioResponse)
 async def merge_video_audio_endpoint(request: MergeVideoAudioRequest):
-    logger.info(f"Merge request: video={request.video_path}")
-    
-    # Run in thread pool - FFmpeg subprocess
-    success, result = await asyncio.to_thread(
-        merge_video_with_audio, request.video_path, request.audio_text
-    )
+    req_id = new_request_id()
+    logger.info("merge_start", extra={
+        "request_id": req_id, "endpoint": "/merge_video_audio",
+    })
+
+    with log_timing(logger, "video_audio_merge", req_id):
+        success, result = await asyncio.to_thread(
+            merge_video_with_audio, request.video_path, request.audio_text
+        )
     
     if success:
         return MergeVideoAudioResponse(
