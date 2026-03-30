@@ -117,11 +117,15 @@ def render_merge_section(
     final_error_key: str,
     prefix: str,
     merge_video_audio_api,
+    code_key: str = "",
 ):
     """Merge button + final video display + download."""
     script = st.session_state.get(script_key)
     if not script:
         return
+
+    # Pick up generated Manim code for segment-based sync
+    manim_code = st.session_state.get(code_key, "") if code_key else ""
 
     st.markdown("---")
     st.subheader("Create Final Video with Narration")
@@ -133,7 +137,7 @@ def render_merge_section(
             with st.spinner("Merging animation with narration..."):
                 st.session_state[final_video_key] = None
                 st.session_state[final_error_key] = None
-                ok, result = merge_video_audio_api(video_path, script)
+                ok, result = merge_video_audio_api(video_path, script, manim_code or None)
                 if ok:
                     st.session_state[final_video_key] = result
                 else:

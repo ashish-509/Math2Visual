@@ -195,11 +195,23 @@ IMPORTANT - Use these CORRECT modern Manim methods:
 
 For math: Use MathTex(r"...") with escaped backslashes (\\frac, \\sqrt, \\pi)
 
-LAYOUT RULES:
+LAYOUT RULES (CRITICAL - PREVENT TEXT OVERLAP):
 - Safe zone: x[-5.5,5.5] y[-3.2,3.2]
-- Title: .scale(0.45), Body: .scale(0.32), Math: .scale(0.5)
-- Max 35 chars/line, use \\n to break
-- FadeOut old content before showing new
+- Title: .scale(0.4), Body: .scale(0.3), Labels: .scale(0.22)
+- Max 30 chars/line, use \\n to break
+- ALWAYS FadeOut ALL previous text before showing new text/steps
+- Maximum 3 text elements visible on screen at any time
+- NEVER stack more than 3 lines without clearing
+
+STEP-BY-STEP PROBLEM SOLVING (MUST FOLLOW):
+When solving a math problem, use a SLIDE approach:
+1. Show problem statement → FadeOut everything
+2. Show Step 1 with work → FadeOut everything
+3. Show Step 2 with work → FadeOut everything
+4. Continue until done → FadeOut everything
+5. Show final answer
+Each step is its own screen. NEVER show all steps simultaneously.
+
 - End with: self.play(*[FadeOut(mob) for mob in self.mobjects])
 
 Rules:
@@ -215,7 +227,7 @@ Rules:
 10. self.add(obj) = instant appearance (no animation)
 11. self.play(Write(obj)) or self.play(FadeIn(obj)) = animated appearance
 12. self.play() only takes Animation objects: Create(), Write(), FadeIn(), Transform(), etc.
-13. ALWAYS scale text with .scale(0.5) or smaller to prevent overflow
+13. ALWAYS scale text with .scale(0.4) or smaller to prevent overflow
 14. ALWAYS fade out previous content before showing new content to prevent overlap
 15. Keep all elements within the safe frame zone (-6 to +6 horizontal, -3.5 to +3.5 vertical)"""
         

@@ -74,20 +74,67 @@ class GroqClient:
 5. Generate COMPLETE code - never truncate or use "..." or comments like "continue..."
 
 ======================================================================================
+                     !!!! ABSOLUTE BAN ON LATEX OBJECTS !!!!
+======================================================================================
+
+*** NEVER use MathTex(), Tex(), or any LaTeX-based object. ***
+LaTeX is NOT installed. Any MathTex/Tex call WILL crash the render.
+
+INSTEAD of MathTex/Tex, ALWAYS use Text():
+- Text("y = x²").scale(0.32)
+- Text("f(x) = x² + 2x + 1").scale(0.32)
+- Text("Area = pi × r²").scale(0.32)
+- Text("dy/dx = 2x").scale(0.32)
+- Text("a² + b² = c²").scale(0.32)
+- Text("integral of f(x) dx").scale(0.32)
+
+Write math in plain readable form using Unicode symbols where possible:
+  ² ³ × ÷ ≤ ≥ ≠ ≈ → π θ α β Σ ∫ √ ∞
+
+======================================================================================
                            LAYOUT RULES (PREVENT OVERLAP)
 ======================================================================================
 
 SAFE ZONE: x=[-5.5, 5.5], y=[-3.2, 3.2] - content outside gets cut off
 
-TEXT SIZING:
-- Title: .scale(0.45).to_edge(UP)
-- Body: .scale(0.32)
-- Math: .scale(0.5)
-- Labels: .scale(0.22)
-- Max 35 chars per line, use \\n to break
+TEXT SIZING (STRICT):
+- Title: .scale(0.4).to_edge(UP, buff=0.3)
+- Body/Math: .scale(0.3)
+- Labels on shapes: .scale(0.22)
+- Step numbers/headers: .scale(0.28)
+- Max 30 chars per line, use \\n to break longer text
+- NEVER use .scale() above 0.45 for ANY text
 
-PREVENT OVERLAP: Always FadeOut old content before showing new content.
-Max 3 elements visible at once.
+!!! ABSOLUTE RULE — PREVENT TEXT OVERLAP !!!
+- BEFORE showing any new text/content, ALWAYS FadeOut ALL previous text first
+- Use self.play(*[FadeOut(mob) for mob in self.mobjects]) to clear the screen between sections
+- Maximum 3-4 text elements visible at the SAME TIME on screen
+- If you have a list of steps, show ONE or TWO steps at a time, then clear and show next
+- NEVER stack more than 3 lines of text vertically without clearing previous ones
+- Use .move_to() or .to_edge() to position text — NEVER let text auto-stack
+- Keep generous spacing: buff=0.4 minimum between text elements
+- When showing steps, use a "slide" approach: show step, wait, fade out, show next step
+
+======================================================================================
+              STEP-BY-STEP PROBLEM SOLVING (CRITICAL FOR MATH PROBLEMS)
+======================================================================================
+
+When solving a math problem, ALWAYS follow this slide-based pattern:
+1. Show the problem statement alone first (title + problem text)
+2. FadeOut everything, then show Step 1 with its work
+3. FadeOut Step 1, then show Step 2 with its work
+4. Continue: FadeOut previous step, show next step
+5. FadeOut last step, show the final answer/result
+6. End with cleanup
+
+Each "slide" should have:
+- A step header: Text("Step 1: ...").scale(0.28).to_edge(UP, buff=0.3)
+- The math work: Text("...").scale(0.3).move_to(ORIGIN)
+- A brief self.wait(1.5) for reading time
+- Then FadeOut EVERYTHING before the next step
+
+NEVER show all steps at once. NEVER stack steps below each other.
+Treat each step as a separate slide/screen.
 
 ALWAYS END WITH:
     self.wait(2)
@@ -98,23 +145,8 @@ ALWAYS END WITH:
 ======================================================================================
 
 *** LIST SYNTAX - MUST BE CORRECT: ***
-CORRECT:
-    points = [(1, 2), (3, 4), (5, 6)]
-    
-CORRECT (multiline):
-    points = [
-        (1, 2),
-        (3, 4),
-    ]
-
-WRONG (syntax error):
-    points = []
-        (1, 2),
-    ]
-
-*** MATHTEX SYNTAX: ***
-- Use raw strings: MathTex(r"\\frac{a}{b}")
-- Double backslashes: \\frac, \\sqrt, \\pi, \\times, \\div
+CORRECT:   points = [(1, 2), (3, 4), (5, 6)]
+WRONG:     points = []\\n        (1, 2),\\n    ]
 
 *** DEPRECATED CALLS - USE MODERN API: ***
 - Create() not ShowCreation()
@@ -122,46 +154,86 @@ WRONG (syntax error):
 - FadeIn() / FadeOut() for appearing/disappearing
 
 ======================================================================================
-                          COMPLETE WORKING TEMPLATE
+                  COMPLETE WORKING TEMPLATE — STEP-BY-STEP SOLVING
+======================================================================================
+
+from manim import *
+
+class SolveEquation(Scene):
+    def construct(self):
+        # --- Slide 1: Problem Statement ---
+        title = Text("Solving 2x + 5 = 13").scale(0.4).to_edge(UP, buff=0.3)
+        problem = Text("Find the value of x").scale(0.3).move_to(ORIGIN)
+        self.play(Write(title), Write(problem))
+        self.wait(1.5)
+        self.play(FadeOut(title), FadeOut(problem))
+
+        # --- Slide 2: Step 1 ---
+        step1_title = Text("Step 1: Subtract 5 from both sides").scale(0.28).to_edge(UP, buff=0.3)
+        step1_work = Text("2x + 5 - 5 = 13 - 5\\n2x = 8").scale(0.3).move_to(ORIGIN)
+        self.play(Write(step1_title), Write(step1_work))
+        self.wait(1.5)
+        self.play(FadeOut(step1_title), FadeOut(step1_work))
+
+        # --- Slide 3: Step 2 ---
+        step2_title = Text("Step 2: Divide both sides by 2").scale(0.28).to_edge(UP, buff=0.3)
+        step2_work = Text("2x / 2 = 8 / 2\\nx = 4").scale(0.3).move_to(ORIGIN)
+        self.play(Write(step2_title), Write(step2_work))
+        self.wait(1.5)
+        self.play(FadeOut(step2_title), FadeOut(step2_work))
+
+        # --- Slide 4: Final Answer ---
+        result_title = Text("Solution").scale(0.4).to_edge(UP, buff=0.3)
+        result = Text("x = 4").scale(0.4).set_color(GREEN).move_to(ORIGIN)
+        check = Text("Check: 2(4) + 5 = 8 + 5 = 13  ✓").scale(0.25).next_to(result, DOWN, buff=0.4)
+        self.play(Write(result_title), Write(result))
+        self.play(Write(check))
+        self.wait(2)
+
+        # --- Cleanup ---
+        self.play(*[FadeOut(mob) for mob in self.mobjects])
+
+======================================================================================
+                  COMPLETE WORKING TEMPLATE — CONCEPT VISUALIZATION
 ======================================================================================
 
 from manim import *
 
 class ConceptVisualization(Scene):
     def construct(self):
-        # 1. Title (stays briefly)
-        title = Text("Topic Title Here").scale(0.45).to_edge(UP, buff=0.4)
+        # 1. Title
+        title = Text("Topic Title Here").scale(0.4).to_edge(UP, buff=0.3)
         self.play(Write(title))
         self.wait(1)
-        
-        # 2. Explanation text (replace title)
+
+        # 2. Explanation (replace title first)
         self.play(FadeOut(title))
-        explanation = Text("Key concept explained\\nin simple terms").scale(0.32).move_to(UP * 1)
+        explanation = Text("Key concept explained\\nin simple terms").scale(0.3).move_to(UP * 1)
         self.play(Write(explanation))
         self.wait(1.5)
-        
-        # 3. Show visual (keep explanation, add graph below)
+
+        # 3. Visual (clear old content, show graph)
+        self.play(FadeOut(explanation))
         axes = Axes(x_range=[-3,3,1], y_range=[-2,2,1], x_length=5, y_length=3)
         axes.scale(0.7).move_to(DOWN * 0.8)
-        self.play(FadeOut(explanation))
         self.play(Create(axes))
-        
         graph = axes.plot(lambda x: x**2, color=BLUE)
         self.play(Create(graph))
         self.wait(1)
-        
-        # 4. Add small label
+
+        # 4. Label (use Text, NOT MathTex)
         label = Text("y = x²").scale(0.22).next_to(axes, UP, buff=0.15)
         self.play(Write(label))
         self.wait(1.5)
-        
+
         # 5. Clean ending
         self.wait(2)
         self.play(*[FadeOut(mob) for mob in self.mobjects])
 
 ======================================================================================
 
-Now generate the complete Manim code. Output ONLY the Python code, starting with 'from manim import *'."""
+Now generate the complete Manim code. Output ONLY the Python code, starting with 'from manim import *'.
+REMEMBER: NEVER use MathTex or Tex. Use Text() for ALL text including math formulas."""
 
             logger.info(f"Generating code with Groq ({self.model})...")
             
@@ -174,7 +246,7 @@ Now generate the complete Manim code. Output ONLY the Python code, starting with
                     },
                     {
                         "role": "user",
-                        "content": f"Generate complete Manim code for:\n{prompt}\n\nREMINDER: Output COMPLETE code only. No truncation. No markdown. No explanations."
+                        "content": f"Generate complete Manim code for:\n{prompt}\n\nCRITICAL REMINDERS:\n1. Output COMPLETE code only. No truncation. No markdown. No explanations.\n2. NEVER use MathTex or Tex — use Text() for ALL text including formulas.\n3. PREVENT OVERLAP: FadeOut ALL previous content before showing new text/steps.\n4. For problem solving: show ONE step per screen, FadeOut before next step.\n5. Keep text small: .scale(0.3) for body, .scale(0.4) max for titles.\n6. Maximum 3 text elements visible at once."
                     }
                 ],
                 model=self.model,
@@ -196,7 +268,7 @@ Now generate the complete Manim code. Output ONLY the Python code, starting with
             logger.error(f"Groq API error: {e}")
             return f"# Error generating code: {str(e)}"
     
-    def generate_narration(self, prompt, max_tokens=1024, temperature=0.8):
+    def generate_narration(self, prompt, max_tokens=1024, temperature=0.8, manim_code=None):
        
         try:
             # System prompt specifically for narration (NOT code)
@@ -211,6 +283,7 @@ CRITICAL RULES:
 4. DO NOT say "Here is the narration" or similar - just start the narration directly
 5. DO NOT use bullet points, numbers, or formatting - just flowing speech
 6. Sound like an enthusiastic teacher explaining to students
+7. If animation code is provided, narrate EXACTLY what appears on screen — do not invent extra content
 
 FORBIDDEN (never include):
 - "from manim import" or any code
@@ -219,11 +292,14 @@ FORBIDDEN (never include):
 - "Hello everyone", "Welcome", "In this video"
 - Markdown like ** or # or ```
 - Timestamps like [0:00]
+- Technical terms: speed, quality, resolution, fps, render, version, pixels, codec, bitrate
+- Visual descriptions: "we see", "notice how", "as you can see", "appearing on screen"
 
 EXAMPLE OUTPUT:
 "Local minima and maxima are fascinating points on a curve. At these special locations, the function momentarily stops increasing or decreasing. Think of it like a ball rolling on a hill - at the very top, it pauses before rolling down the other side. That peak is a local maximum. Similarly, the bottom of a valley is a local minimum. Mathematically, we find these points where the derivative equals zero."
 
-Write natural, flowing speech that teaches the concept."""
+Write natural, flowing speech that teaches the concept. Be concise and clear.
+When code is included, read every formula/text that appears on screen in spoken form and explain it."""
 
             logger.info(f"Generating narration with Groq ({self.model})...")
             
@@ -259,7 +335,7 @@ Write natural, flowing speech that teaches the concept."""
             return f"Error generating narration: {str(e)}"
     
     def _clean_narration(self, text):
-        """Clean narration text - remove any code or markdown that slipped through."""
+        """Clean narration text - remove any code, markdown, or technical junk."""
         if not text:
             return ""
         
@@ -274,7 +350,7 @@ Write natural, flowing speech that teaches the concept."""
         text = re.sub(r'^\s*[-*]\s+', '', text, flags=re.MULTILINE)  # Bullet points
         text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)  # Numbered lists
         
-        # Remove any lines that look like code
+        # Remove any lines that look like code or technical junk
         lines = text.split('\n')
         clean_lines = []
         for line in lines:
@@ -282,13 +358,30 @@ Write natural, flowing speech that teaches the concept."""
             # Skip code-like lines
             if any(pattern in stripped for pattern in [
                 'from manim', 'import ', 'def ', 'class ', 'self.', 
-                '```', 'python', '.scale(', '.play(', '.wait(', 
+                '```', '.scale(', '.play(', '.wait(', '.move_to(', '.next_to(',
                 'FadeIn', 'FadeOut', 'Create', 'Write', 'Axes(',
-                'MathTex', 'Text(', '= ', 'lambda'
+                'MathTex', 'Text(', '= ', 'lambda', 'VGroup', '.plot(',
             ]):
                 continue
             # Skip lines starting with common meta-text
-            if stripped.lower().startswith(('here is', 'here\'s', 'sure', 'certainly', 'of course')):
+            if stripped.lower().startswith(('here is', 'here\'s', 'sure', 'certainly', 'of course',
+                                            'note:', 'tip:', 'warning:', 'error:')):
+                continue
+            # Skip lines with rendering / technical junk
+            if re.search(r'\b(fps|resolution|render(ing|ed|s)?|pixel|codec|bitrate|frame\s*rate|version\s*[\d.]|v\d+\.\d+)\b',
+                         stripped, re.IGNORECASE):
+                continue
+            if re.search(r'\b(low|medium|high)\s*(quality|speed)\b', stripped, re.IGNORECASE):
+                continue
+            if re.search(r'\b(480|720|1080|1440|2160|4k)\s*p?\b', stripped, re.IGNORECASE):
+                continue
+            if re.search(r'\bspeed\b', stripped, re.IGNORECASE):
+                continue
+            if re.search(r'\b(animation|animate|playback|slow\s*down|fast\s*forward|encoding)\b',
+                         stripped, re.IGNORECASE):
+                continue
+            # Skip separator lines
+            if re.match(r'^[-=*]{3,}$', stripped):
                 continue
             if stripped:
                 clean_lines.append(stripped)
@@ -357,6 +450,7 @@ Write natural, flowing speech that teaches the concept."""
         code = self._fix_manim_specific_errors(code)
         code = self._ensure_scene_class_exists(code)
         code = self._validate_and_fix_python_syntax(code)
+        code = self._replace_mathtex_with_text(code)
         
         return code
     
@@ -637,6 +731,56 @@ class GeneratedScene(Scene):
                 # Return original code with error comment
                 return f"# WARNING: Code may have syntax errors - please review\n# Error: {e}\n\n{code}"
     
+    def _replace_mathtex_with_text(self, code):
+        """Replace any MathTex/Tex calls with Text() as a safety net.
+        
+        Even though the system prompt bans MathTex, LLMs sometimes ignore
+        instructions.  This catches any that slip through so compilation
+        doesn't fail on systems without LaTeX installed.
+        """
+        if 'MathTex' not in code and 'Tex(' not in code:
+            return code
+
+        def _strip_latex(s: str) -> str:
+            """Convert a LaTeX expression to readable plain text."""
+            s = s.replace('\\\\', '')
+            s = re.sub(r'\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}', r'\1/\2', s)
+            s = re.sub(r'\\sqrt\s*\{([^{}]*)\}', r'sqrt(\1)', s)
+            s = re.sub(r'\\text\s*\{([^{}]*)\}', r'\1', s)
+            for fn in ['sin','cos','tan','log','ln','exp','lim','int','sum']:
+                s = re.sub(rf'\\{fn}\b', fn, s)
+            s = re.sub(r'\\(alpha|beta|gamma|delta|theta|pi|sigma|omega|lambda|phi|psi|mu|epsilon)\b',
+                        r'\1', s, flags=re.IGNORECASE)
+            symbol_map = {r'\\infty': '\u221e', r'\\times': '\u00d7', r'\\cdot': '\u00b7',
+                          r'\\pm': '\u00b1', r'\\leq': '\u2264', r'\\geq': '\u2265',
+                          r'\\neq': '\u2260', r'\\rightarrow': '\u2192', r'\\Rightarrow': '\u21d2',
+                          r'\\partial': '\u2202', r'\\nabla': '\u2207', r'\\approx': '\u2248'}
+            for pat, repl in symbol_map.items():
+                s = re.sub(pat, repl, s)
+            s = re.sub(r'\^\{([^{}]*)\}', r'^\1', s)
+            s = re.sub(r'_\{([^{}]*)\}', r'_\1', s)
+            s = s.replace('{', '').replace('}', '')
+            s = re.sub(r'\\(\w+)', r'\1', s)
+            s = s.replace('\\', '')
+            s = re.sub(r'\s+', ' ', s).strip()
+            if len(s) > 55:
+                s = s[:52] + '...'
+            return s
+
+        def _replacer_dq(m):
+            plain = _strip_latex(m.group(2)).replace('"', "'")
+            return f'Text("{plain}"'
+
+        def _replacer_sq(m):
+            plain = _strip_latex(m.group(2)).replace("'", '"')
+            return f"Text('{plain}'"
+
+        code = re.sub(r'\b(MathTex|Tex)\s*\(\s*r?"((?:[^"\\]|\\.)*)"', _replacer_dq, code)
+        code = re.sub(r"\b(MathTex|Tex)\s*\(\s*r?'((?:[^'\\]|\\.)*)'", _replacer_sq, code)
+        
+        logger.info("_replace_mathtex_with_text: converted MathTex/Tex → Text()")
+        return code
+
     def regenerate_with_error(self, original_prompt, context, error_message, 
                                max_tokens=2048, temperature=0.5):
         # Regenerate code using feedback from a previous error.
@@ -673,6 +817,16 @@ Focus on:
 1. Understanding the exact error
 2. Writing correct code that avoids this error
 3. Using proper Manim Community Edition syntax
+
+CRITICAL: NEVER use MathTex() or Tex() — LaTeX is NOT installed.
+Use Text() for ALL text including math formulas. Write math in plain readable form.
+
+PREVENT OVERLAP:
+- ALWAYS FadeOut ALL previous text/content before showing new text
+- For step-by-step solutions: show ONE step at a time, FadeOut before next step
+- Keep text scales small: .scale(0.3) for body, .scale(0.4) max for titles
+- Maximum 3 text elements visible at the same time
+- NEVER stack steps vertically — use a slide approach
 
 Output ONLY the corrected Python code, starting with 'from manim import *'."""
                     },

@@ -126,3 +126,97 @@ def parse_scene_timing(code: str) -> SceneTimeline:
                     events.append(SceneEvent(start=cursor, duration=0.0, label="add objects"))
 
     return SceneTimeline(events=events, total_duration=round(cursor, 2))
+
+
+# ---------------------------------------------------------------------------
+# Visual-content extraction — pulls out all text / formula objects so
+# the narration prompt knows exactly what appears on screen.
+# ---------------------------------------------------------------------------
+
+def _extract_string_arg(node: ast.expr) -> str | None:
+    """Return a plain-text representation of the first string argument."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):  # f-string
+        parts = []
+        for v in node.values:
+            if isinstance(v, ast.Constant):
+                parts.append(str(v.value))
+            else:
+                parts.append("{...}")
+        return "".join(parts)
+    return None
+
+
+@dataclass
+class VisualElement:
+    kind: str          # "Text", "MathTex", "Title", "Tex", "Paragraph", etc.
+    content: str       # the string shown on screen
+    order: int         # appearance order
+
+    def __str__(self) -> str:
+        return f"[{self.kind}] {self.content}"
+
+
+def extract_visual_content(code: str) -> List[VisualElement]:
+    """Parse Manim code and return all visible text/formula objects in order.
+
+    Detects:  Text(), MathTex(), Tex(), Title(), MarkupText(), Paragraph(),
+              BulletedList(), and similar text-bearing constructors.
+    """
+    _TEXT_CLASSES = {
+        "Text", "MathTex", "Tex", "Title", "MarkupText",
+        "Paragraph", "BulletedList",
+    }
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    elements: List[VisualElement] = []
+    order = 0
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # Get class name
+        name = None
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            name = node.func.attr
+        if name not in _TEXT_CLASSES:
+            continue
+
+        # Collect all positional string arguments
+        parts: list[str] = []
+        for arg in node.args:
+            s = _extract_string_arg(arg)
+            if s:
+                parts.append(s)
+
+        if parts:
+            order += 1
+            elements.append(VisualElement(
+                kind=name,
+                content=" ".join(parts),
+                order=order,
+            ))
+
+    return elements
+
+
+def build_content_summary(code: str) -> str:
+    """Return a human-readable summary of all visual content in *code*.
+
+    Suitable for injection into the teaching-script prompt so the LLM
+    knows exactly what text/formulas appear on screen.
+    """
+    elements = extract_visual_content(code)
+    if not elements:
+        return ""
+
+    lines = ["Visual content appearing on screen (in order):"]
+    for el in elements:
+        lines.append(f"  {el.order}. {el}")
+    return "\n".join(lines)

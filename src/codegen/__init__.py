@@ -41,23 +41,26 @@ class {class_name}(Scene):
 
 class {class_name}(Scene):
     def construct(self):
-        title = Text("{title}").scale(0.4).to_edge(UP, buff=0.4)
+        # --- Problem Statement Slide ---
+        title = Text("{title}").scale(0.4).to_edge(UP, buff=0.3)
         self.play(Write(title))
-        self.wait(0.5)
+        self.wait(1)
+        self.play(FadeOut(title))
 
         steps = [{steps_list}]
 
-        prev = None
+        # --- Show each step as its own slide ---
         for i, step_text in enumerate(steps):
-            step = Text(step_text).scale(0.35)
-            if prev is None:
-                step.move_to(ORIGIN + UP * 0.5)
-            else:
-                step.next_to(prev, DOWN, buff=0.5)
-            self.play(Write(step))
-            self.wait(1)
-            prev = step
+            header = Text(f"Step {{i+1}}").scale(0.28).to_edge(UP, buff=0.3).set_color(YELLOW)
+            step = Text(step_text).scale(0.3).move_to(ORIGIN)
+            self.play(Write(header), Write(step))
+            self.wait(1.5)
+            # Clear screen before next step
+            self.play(FadeOut(header), FadeOut(step))
 
+        # --- Final Answer Slide ---
+        result = Text("{result}").scale(0.4).set_color(GREEN).move_to(ORIGIN)
+        self.play(Write(result))
         self.wait(2)
         self.play(*[FadeOut(mob) for mob in self.mobjects])
 ''',
@@ -292,16 +295,17 @@ class {class_name}(Scene):
 
 class {class_name}(Scene):
     def construct(self):
-        title = Text("{title}").scale(0.45).to_edge(UP, buff=0.4)
+        title = Text("{title}").scale(0.4).to_edge(UP, buff=0.3)
         self.play(Write(title))
         self.wait(0.5)
         self.play(FadeOut(title))
 
-        definition = Text("{definition}").scale(0.3).move_to(UP * 1.5)
+        definition = Text("{definition}").scale(0.3).move_to(UP * 0.5)
         self.play(Write(definition))
         self.wait(1.5)
+        self.play(FadeOut(definition))
 
-        formula = Text("{formula}").scale(0.35).move_to(ORIGIN)
+        formula = Text("{formula}").scale(0.35).move_to(UP * 0.5)
         self.play(Write(formula))
         self.wait(1)
 

@@ -85,11 +85,14 @@ except ImportError as e:
 # Pre-render validation and error classification
 try:
     from src.validation.code_validator import PreRenderValidator
+    from src.validation.code_validator import fix_text_overlap, fix_step_by_step_overlap
     from src.validation.error_classifier import ErrorClassifier
     VALIDATOR_AVAILABLE = True
+    OVERLAP_FIX_AVAILABLE = True
     _pre_render_validator = PreRenderValidator(timeout=MANIM_DRYRUN_TIMEOUT)
 except ImportError as e:
     VALIDATOR_AVAILABLE = False
+    OVERLAP_FIX_AVAILABLE = False
     _pre_render_validator = None
     logger.warning(f"Validation module not available: {e}")
 
@@ -119,11 +122,19 @@ except ImportError as e:
 
 # Scene-aware timing for teaching-script generation
 try:
-    from src.codegen.scene_timer import parse_scene_timing
+    from src.codegen.scene_timer import parse_scene_timing, build_content_summary
     SCENE_TIMER_AVAILABLE = True
 except ImportError as e:
     SCENE_TIMER_AVAILABLE = False
     logger.warning(f"Scene timer not available: {e}")
+
+# Segment-based audio-video sync engine
+try:
+    from src.tts.segment_sync import sync_narration_to_video
+    SEGMENT_SYNC_AVAILABLE = True
+except ImportError as e:
+    SEGMENT_SYNC_AVAILABLE = False
+    logger.warning(f"Segment sync not available: {e}")
 
 # Edge-TTS engine (SSML pauses, higher quality voice)
 try:
@@ -263,6 +274,7 @@ class TTSResponse(BaseModel):
 class MergeVideoAudioRequest(BaseModel):
     video_path: str
     audio_text: str
+    manim_code: Optional[str] = None
 
 
 class MergeVideoAudioResponse(BaseModel):
@@ -316,7 +328,7 @@ class SmartGenerateResponse(BaseModel):
     message: str = ""
 
 
-# Error-feedback regeneration — Request/Response Models
+# Error-feedback regeneration - Request/Response Models
 class RegenerateAndCompileRequest(BaseModel):
     prompt: str                        
     current_code: str                 
@@ -480,8 +492,9 @@ def clean_text_for_tts(text: str) -> str:
     lines = result.split('\n')
     cleaned_lines = []
     
-    # Patterns to skip entirely
-    skip_patterns = [
+    # First pass: line-level filtering for lines that are clearly code/junk
+    # (These patterns indicate the whole line is code or technical noise)
+    code_line_patterns = [
         r'^#',  # Comments
         r'^from\s+\w+\s+import',  # Import statements
         r'^import\s+',  # Import statements
@@ -491,7 +504,6 @@ def clean_text_for_tts(text: str) -> str:
         r'^```',  # Code fences
         r'^\s*WARNING',  # Warnings
         r'^\s*Error',  # Errors
-        r'^\s*#\s*WARNING',  # Code comments with warnings
         r'^\s*\w+\s*=\s*\w+\(',  # Variable assignments like x = Circle()
         r'^\s*return\s+',  # Return statements
         r'^\s*if\s+.*:',  # If statements
@@ -501,61 +513,77 @@ def clean_text_for_tts(text: str) -> str:
         r'^\s*except',  # Except blocks
         r'^\s*\[',  # Lists
         r'^\s*\{',  # Dicts
-        r'\.scale\(',  # Manim scale
-        r'\.move_to\(',  # Manim positioning
-        r'\.next_to\(',  # Manim positioning
-        r'MathTex\(',  # MathTex
-        r'Text\(',  # Text objects
-        r'Axes\(',  # Axes
-        r'\.plot\(',  # Plot
-        r'VGroup\(',  # VGroup
-        r'FadeIn\(',  # Animations
-        r'FadeOut\(',  # Animations
-        r'Create\(',  # Animations
-        r'Write\(',  # Animations
-        r'python',  # Code language markers
-        r'```',  # Code fences
-        r'manim',  # Manim references in code
+        r'^[-=]{3,}',  # separator lines
+        r'^\s*\*{2,}',  # markdown bold markers
+        r'^\s*Note\s*:',  # Note: ...
+        r'^\s*Tip\s*:',  # Tip: ...
     ]
-    
+
+    pre_filtered = []
     for line in lines:
         stripped = line.strip()
-        
-        # Skip empty lines
-        if not stripped:
+        if not stripped or len(stripped) < 3:
             continue
-        
-        # Skip very short lines (likely artifacts)
-        if len(stripped) < 3:
-            continue
-        
-        # Check if line matches any skip pattern
-        should_skip = False
-        for pattern in skip_patterns:
+        # Skip lines that are entirely code-like
+        is_code = False
+        for pattern in code_line_patterns:
             if re.search(pattern, stripped, re.IGNORECASE):
-                should_skip = True
+                is_code = True
                 break
-        
-        if should_skip:
+        if is_code:
             continue
-        
-        # Skip lines that look like code (have parentheses with parameters)
-        if re.search(r'\w+\([^)]*\)', stripped) and '=' in stripped:
-            continue
-        
-        # Skip lines that are mostly symbols/punctuation
-        alpha_chars = sum(1 for c in stripped if c.isalpha() or c.isspace())
-        if len(stripped) > 0 and alpha_chars / len(stripped) < 0.6:
-            continue
-        
-        # Skip lines that look like code variable names or technical terms
+        # Skip lines that look like code variable names
         if re.match(r'^[a-z_]+[A-Z]', stripped):  # camelCase
             continue
         if re.match(r'^[a-z]+_[a-z]+', stripped):  # snake_case
             continue
-        
-        # This line looks like natural language, keep it
-        cleaned_lines.append(stripped)
+        # Skip lines that are mostly symbols/punctuation
+        alpha_chars = sum(1 for c in stripped if c.isalpha() or c.isspace())
+        if len(stripped) > 0 and alpha_chars / len(stripped) < 0.4:
+            continue
+        pre_filtered.append(stripped)
+
+    # Second pass: sentence-level filtering for technical junk
+    # Split into sentences so a single junk phrase doesn't kill an entire paragraph
+    joined = ' '.join(pre_filtered)
+    sentences = re.split(r'(?<=[.!?])\s+', joined)
+
+    # Patterns that mark an individual SENTENCE (not whole line) as junk
+    sentence_junk_patterns = [
+        r'\b\d+\s*(fps|frames?\s*per\s*sec)',  # "30 fps"
+        r'\b(480|720|1080|1440|2160|4k)\s*p?\b',  # resolution
+        r'\b(low|medium|high)\s*quality\b',  # quality flags
+        r'\bresolution\b',
+        r'\brender(ing|ed|s)?\b',
+        r'\bpixel',
+        r'\bbitrate\b',
+        r'\bcodec\b',
+        r'\bencod(e|ing|er)\b',
+        r'\bframe\s*rate\b',
+        r'\bversion\s*[\d.]',
+        r'\bv\d+\.\d+',
+        r'\bspeed\b',
+        r'\b(animation|animate|playback|slow\s*down|fast\s*forward|encoding)\b',
+        r'\bself\.\w+',
+        r'\.scale\(', r'\.move_to\(', r'\.next_to\(', r'\.plot\(',
+        r'\b(MathTex|VGroup|FadeIn|FadeOut|Create|Write|Axes)\s*\(',
+        r'\bmanim\b',
+        r'\bpython\b',
+        r'```',
+    ]
+
+    for sentence in sentences:
+        s = sentence.strip()
+        if not s or len(s) < 3:
+            continue
+        is_junk = False
+        for pat in sentence_junk_patterns:
+            if re.search(pat, s, re.IGNORECASE):
+                is_junk = True
+                break
+        if is_junk:
+            continue
+        cleaned_lines.append(s)
     
     # Join and clean up
     result = ' '.join(cleaned_lines)
@@ -845,6 +873,20 @@ def validate_and_fix_manim_code(code: str) -> Tuple[bool, str, str]:
     # Step 0: Fix layout issues first
     code = fix_layout_issues_in_code(code)
     
+    # Step 0a: Fix text overlap and step-by-step stacking
+    if OVERLAP_FIX_AVAILABLE:
+        code = fix_text_overlap(code)
+        code = fix_step_by_step_overlap(code)
+    
+    # Step 0b: Proactively convert MathTex/Tex -> Text() BEFORE compilation
+    # LaTeX is almost certainly not installed; converting up-front avoids the
+    # guaranteed first-attempt failure that causes "Regenerating..." messages.
+    if not check_latex_available():
+        converted = convert_mathtex_to_text(code)
+        if converted != code:
+            code = converted
+            errors_fixed.append("Converted MathTex/Tex to Text() (LaTeX not installed)")
+    
     # Step 1: Basic cleanup
     code = code.strip()
     
@@ -1133,7 +1175,7 @@ User Request: {prompt}"""
             if groq_client is None:
                 return False, "Failed to initialize Groq client"
             
-            code = groq_client.generate(augmented_prompt, max_tokens=2048, temperature=0.7)
+            code = groq_client.generate(augmented_prompt, max_tokens=2048, temperature=0.4)
             
             # Validate and fix the generated code
             is_valid, fixed_code, error_msg = validate_and_fix_manim_code(code)
@@ -1161,7 +1203,7 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
     if not class_name:
         return False, "Could not find a Scene class in the code"
     
-    # Check render cache first — skip the whole render if we've done this before
+    # Check render cache first - skip the whole render if we've done this before
     if _render_cache is not None:
         cached_path = _render_cache.get(code, quality)
         if cached_path:
@@ -1256,12 +1298,12 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
                             "compilation still failed. Please regenerate without MathTex.\n\n"
                             f"Error details:\n{retry_error}"
                         )
-                    # Auto-fix succeeded — fall through to the video-finding logic below
+                    # Auto-fix succeeded - fall through to the video-finding logic below
                 else:
                     # The code had no MathTex/Tex to convert, so we can't auto-fix it.
                     return False, (
                         "LaTeX is not installed on this system (the 'latex' binary was not found).\n"
-                        "Please avoid MathTex() and Tex() — use Text() for all text and math.\n\n"
+                        "Please avoid MathTex() and Tex() - use Text() for all text and math.\n\n"
                         f"Original error:\n{error_msg}"
                     )
             else:
@@ -1384,15 +1426,15 @@ def regenerate_code_with_error(original_prompt: str, model_choice: str,
     # so the model stops using MathTex/Tex and switches to Text() instead.
     if is_latex_missing_error:
         logger.info(
-            "LaTeX missing error detected — injecting 'no MathTex' constraint into regeneration prompt"
+            "LaTeX missing error detected - injecting 'no MathTex' constraint into regeneration prompt"
         )
         latex_constraint = (
             "\n\n"
             "===========================================================\n"
-            "CRITICAL SYSTEM CONSTRAINT — LaTeX is NOT installed here:\n"
+            "CRITICAL SYSTEM CONSTRAINT - LaTeX is NOT installed here:\n"
             "===========================================================\n"
-            "- DO NOT use MathTex() anywhere — it requires a LaTeX compiler.\n"
-            "- DO NOT use Tex() anywhere — it also requires LaTeX.\n"
+            "- DO NOT use MathTex() anywhere - it requires a LaTeX compiler.\n"
+            "- DO NOT use Tex() anywhere - it also requires LaTeX.\n"
             "- Use ONLY Text() for every piece of text, including formulas.\n"
             "- For equations, write them in plain text inside Text():\n"
             "    Text('sin(theta) = opp/hyp').scale(0.4)\n"
@@ -1400,7 +1442,7 @@ def regenerate_code_with_error(original_prompt: str, model_choice: str,
             "    Text('a^2 + b^2 = c^2').scale(0.4)\n"
             "    Text('f(x) = x^2 + 2x + 1').scale(0.4)\n"
             "    Text('pi = 3.14159').scale(0.4)\n"
-            "- Subscripts/superscripts: write as plain strings — 'x_0', 'a_n', 'x^2'\n"
+            "- Subscripts/superscripts: write as plain strings - 'x_0', 'a_n', 'x^2'\n"
             "===========================================================\n"
         )
         # Prepend the constraint so the model sees it first
@@ -1507,77 +1549,104 @@ CRITICAL TIMING REQUIREMENT:
 
     # inject scene-level timing info so the LLM knows what happens when
     timing_block = ""
+    content_block = ""
     if SCENE_TIMER_AVAILABLE:
         try:
             timeline = parse_scene_timing(code)
             timing_block = timeline.as_prompt_block()
         except Exception as e:
             logger.debug(f"Scene timer skipped: {e}")
+        try:
+            content_block = build_content_summary(code)
+        except Exception as e:
+            logger.debug(f"Content extraction skipped: {e}")
+
+    # Build compact code summary (strip blank lines, limit length)
+    code_lines = [ln for ln in code.splitlines() if ln.strip()]
+    # Keep the construct() body only (most relevant for narration)
+    in_construct = False
+    construct_lines: list[str] = []
+    for ln in code_lines:
+        if "def construct" in ln:
+            in_construct = True
+            continue
+        if in_construct:
+            if ln and not ln[0].isspace() and not ln.startswith("#"):
+                break  # left the method
+            construct_lines.append(ln)
+    code_summary = "\n".join(construct_lines[:80]) if construct_lines else "\n".join(code_lines[:80])
     
     # Build the teaching prompt - designed for perfect audio-video sync
     teaching_prompt = f"""You are creating a voiceover script for a math teaching video animation.
 
 ==============================================================================
-                         CRITICAL OUTPUT REQUIREMENTS
+                         STRICT OUTPUT FORMAT
 ==============================================================================
 
-*** OUTPUT FORMAT: ***
-- Output ONLY the spoken narration text
-- Start speaking IMMEDIATELY - no introductions
-- NO meta-text like "Here is the narration:" or "Sure, here's..."
-- NO markdown, NO headers, NO bullet points
-- NO timestamps like [0:00] or (pause)
-- Just plain spoken words, nothing else
+- Output ONLY the spoken narration text (plain words, nothing else).
+- Start speaking IMMEDIATELY about the math concept.
+- NO meta-text ("Here is the narration:", "Sure", "Certainly"...).
+- NO markdown, headers, bullet points, code, timestamps, or formatting.
+- NO greetings ("Hello", "Welcome", "In this video").
+- NO visual descriptions ("We see a circle appearing", "Notice how").
+- NO technical terms about rendering (speed, quality, fps, version, resolution, pixels, render, low/medium/high quality).
+- Just plain, flowing, spoken words.
 
-*** WHAT YOU ARE NARRATING: ***
+==============================================================================
+                         WHAT TO NARRATE
+==============================================================================
+
 Topic: "{description}"
-
-Animation code (study this to understand WHEN visuals appear):
-```python
-{code}
-```
 {duration_instruction}
 {timing_block}
 
-==============================================
-                              TIMING RULES
-==============================================
+==============================================================================
+                ANIMATION CODE (what the viewer actually sees)
+==============================================================================
 
-*** CRITICAL FOR AUDIO-VIDEO SYNC: ***
-- Speaking rate: approximately 2.5 words per second
-- Each self.wait(N) in code = N seconds of speaking time
-- Each self.play() takes about 1 second
-- Your script length MUST match the video duration
+{code_summary}
 
-*** PACING: ***
-- When title appears → speak 2-3 sentences about the topic
-- When explanation text appears → elaborate on that specific point
-- When graph/visual appears → describe what it represents mathematically
-- When formula appears → explain what each part means
-- At the end → brief concluding thought (1 sentence)
+==============================================================================
+               TEXT & FORMULAS SHOWN ON SCREEN
+==============================================================================
 
-==============================================
-                            CONTENT RULES
-==============================================
+{content_block if content_block else '(no text objects detected)'}
 
-*** DO: ***
-- Teach the concept - explain WHY and HOW
-- When formula shows: "The area formula pi r squared tells us..."
-- When graph shows: "This parabola represents how..."
-- Use simple, clear language a student would understand
-- Sound like an enthusiastic teacher
+==============================================================================
+                   FRAME-BY-FRAME SYNC INSTRUCTIONS
+==============================================================================
 
-*** DO NOT: ***
-- "We see a circle appearing" (describing visuals)
-- "Hello everyone" or "Welcome" (greetings)
-- "In this video" or "Today we'll learn" (intros)
-- "So to summarize" or "In conclusion" (summaries)
-- "As you can see" or "Notice how" (visual references)
-- Any code, any technical syntax, any warnings
+Study the animation code AND the visual content list above carefully.
+Your narration MUST match what actually appears on screen:
 
-==============================================
+- When a TITLE appears → speak 1-2 sentences introducing the main concept.
+- When EXPLANATION TEXT appears → explain that specific point concisely.
+- When a GRAPH / PLOT appears → describe what the graph represents mathematically.
+- When a FORMULA appears → read the formula aloud in spoken words and explain its meaning.
+- When a SHAPE / VISUAL is created → explain the geometric meaning.
+- During each PAUSE → use the pause duration to finish your current thought.
+- At the END → one brief concluding sentence.
+- When a step is FADED OUT and a new step FADES IN → move your narration to the new step.
 
-Now write ONLY the narration text. Start speaking immediately about the topic."""
+CRITICAL: Narrate the EXACT formulas and text that appear in the code.
+Do NOT invent steps, formulas, or results that are not in the code.
+If the code shows "2x + 3 = 7", say "two x plus three equals seven" - do not change it.
+
+Pacing rule: speak ~2.5 words per second. Match your word count to each segment's duration.
+
+==============================================================================
+                         CONTENT STYLE
+==============================================================================
+
+- Teach WHY and HOW - not just WHAT.
+- Be concise: one clear idea per animation event.
+- Use simple language - as if explaining to a student.
+- Sound like an enthusiastic, clear teacher.
+- Include the math: "The derivative two x tells us the slope at any point."
+
+==============================================================================
+
+Now write ONLY the narration. Start speaking immediately about "{description}"."""
     
     # Use the selected model
     if model_choice == "Mistral-7B (Finetuned)":
@@ -1612,6 +1681,7 @@ Now write ONLY the narration text. Start speaking immediately about the topic.""
             script = groq_client.generate_narration(
                 teaching_prompt, max_tokens=NARRATION_MAX_TOKENS,
                 temperature=NARRATION_TEMPERATURE,
+                manim_code=code,
             )
             return True, script
             
@@ -1698,10 +1768,11 @@ def get_available_video_encoder() -> str:
     return "mpeg4"
 
 
-def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
+def merge_video_with_audio(video_path: str, audio_text: str, manim_code: str = None) -> tuple:
     """
     Merge a video with generated audio narration.
-    Adjusts video speed to match audio length for perfect sync.
+    When manim_code is provided, uses segment-based sync for perfect alignment.
+    Falls back to speed-adjustment when segment sync is unavailable.
     
     Returns: (success, final_video_path or error_message)
     """
@@ -1716,6 +1787,47 @@ def merge_video_with_audio(video_path: str, audio_text: str) -> tuple:
     
     if not cleaned_audio_text or not cleaned_audio_text.strip():
         return False, "No speakable content in the audio text after cleaning"
+
+    # ---- Segment-based sync (preferred when code is available) ----
+    if manim_code and SEGMENT_SYNC_AVAILABLE and SCENE_TIMER_AVAILABLE:
+        try:
+            output_dir = os.path.join(PROJECT_ROOT, "outputs")
+            os.makedirs(output_dir, exist_ok=True)
+            base_name = os.path.splitext(os.path.basename(video_path))[0]
+            final_path = os.path.join(output_dir, f"{base_name}_with_audio.mp4")
+
+            # Build a TTS callable for the sync engine
+            # Text is already cleaned - don't double-clean
+            def _tts_func(text, out_path):
+                if not text or not text.strip():
+                    return None
+                if EDGE_TTS_AVAILABLE:
+                    try:
+                        result = edge_tts_generate(text, out_path)
+                        if result:
+                            return result
+                    except Exception:
+                        pass
+                tts = gTTS(text=text, lang="en", slow=False)
+                tts.save(out_path)
+                return out_path
+
+            ok, result = sync_narration_to_video(
+                narration=cleaned_audio_text,
+                manim_code=manim_code,
+                video_path=video_path,
+                output_path=final_path,
+                tts_func=_tts_func,
+                parse_timing_func=parse_scene_timing,
+                clean_text_func=None,  # already cleaned above
+            )
+            if ok:
+                logger.info("Segment-based sync succeeded: %s", result)
+                return True, result
+            else:
+                logger.warning("Segment sync failed (%s), falling back to speed-adjust", result)
+        except Exception as e:
+            logger.warning("Segment sync error: %s, falling back to speed-adjust", e)
     
     output_dir = os.path.join(PROJECT_ROOT, "outputs")
     os.makedirs(output_dir, exist_ok=True)
@@ -1924,7 +2036,7 @@ async def extract_from_image_endpoint(request: ImageExtractionRequest):
         )
 
     def _do_extraction():
-        # Reuse the codellama client — the vision method uses its own model
+        # Reuse the codellama client - the vision method uses its own model
         client = get_groq_client_cached("codellama")
         if client is None:
             return False, "Failed to initialise Groq client"
@@ -2011,7 +2123,7 @@ async def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
     # Clamp retries to a sensible range (1 – 3)
     max_retries = min(max(1, request.max_retries), 3)
 
-    # Fetch RAG documentation context once — reused across all retry attempts
+    # Fetch RAG documentation context once - reused across all retry attempts
     context = ""
     if RAG_AVAILABLE:
         rag = get_rag_pipeline_cached()
@@ -2024,7 +2136,7 @@ async def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
     for attempt in range(max_retries):
         logger.info(f"Regeneration attempt {attempt + 1}/{max_retries}")
 
-        # Step A: LaTeX quick-fix — try converting MathTex to Text() first.  
+        # Step A: LaTeX quick-fix - try converting MathTex to Text() first.  
         is_latex_error = (
             ("FileNotFoundError" in last_error and "latex" in last_error.lower()) or
             ("No such file or directory" in last_error and "latex" in last_error.lower()) or
@@ -2046,7 +2158,7 @@ async def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
                         code=fixed_code,
                         message="Fixed by automatically converting MathTex to Text() (LaTeX not available on this system)"
                     )
-                # Auto-fix didn't fully solve it — continue with LLM regeneration
+                # Auto-fix didn't fully solve it - continue with LLM regeneration
                 current_code = fixed_code
                 last_error = compile_result
 
@@ -2079,7 +2191,7 @@ async def regenerate_and_compile_endpoint(request: RegenerateAndCompileRequest):
                 message=f"Code regenerated and compiled successfully (attempt {attempt + 1})"
             )
 
-        # Still failing — save the error for the next iteration
+        # Still failing - save the error for the next iteration
         last_error = compile_result
         logger.warning(
             f"Compilation still failed after regeneration attempt {attempt + 1}: "
@@ -2170,7 +2282,8 @@ async def merge_video_audio_endpoint(request: MergeVideoAudioRequest):
 
     with log_timing(logger, "video_audio_merge", req_id):
         success, result = await asyncio.to_thread(
-            merge_video_with_audio, request.video_path, request.audio_text
+            merge_video_with_audio, request.video_path, request.audio_text,
+            request.manim_code,
         )
     
     if success:

@@ -323,12 +323,15 @@ def generate_tts_api(text):
         return None
 
 
-def merge_video_audio_api(video_path, audio_text):
+def merge_video_audio_api(video_path, audio_text, manim_code=None):
     try:
         session = get_http_session()
+        payload = {"video_path": video_path, "audio_text": audio_text}
+        if manim_code:
+            payload["manim_code"] = manim_code
         response = session.post(
             f"{BACKEND_URL}/merge_video_audio",
-            json={"video_path": video_path, "audio_text": audio_text},
+            json=payload,
             timeout=300
         )
         
@@ -728,7 +731,7 @@ if st.session_state.current_page == "Studio":
                         )
 
                     if success:
-                        # Compilation worked straight away — store the video and refresh
+                        # Compilation worked straight away - store the video and refresh
                         st.session_state.video_path = result
 
                     else:
@@ -774,7 +777,7 @@ if st.session_state.current_page == "Studio":
                                 "The code was fixed automatically and the video is ready."
                             )
                         else:
-                            # All retries exhausted — store the combined error for display
+                            # All retries exhausted - store the combined error for display
                             st.session_state.video_error = (
                                 f"--- Initial compilation error ---\n{compile_error}\n\n"
                                 f"--- Regeneration also failed ---\n{regen_result}"
@@ -828,6 +831,7 @@ if st.session_state.current_page == "Studio":
                 final_error_key="final_video_error",
                 prefix="studio",
                 merge_video_audio_api=merge_video_audio_api,
+                code_key="generated_code",
             )
 
             render_audio_preview(
@@ -849,7 +853,7 @@ elif st.session_state.current_page == "Photo to Animation":
         "an animated explainer video."
     )
 
-    # Step 1 — Upload the image
+    # Step 1 - Upload the image
     uploaded_file = st.file_uploader(
         "Upload a photo of a math problem",
         type=["jpg", "jpeg", "png"],
@@ -864,7 +868,7 @@ elif st.session_state.current_page == "Photo to Animation":
         image_bytes = uploaded_file.getvalue()
         mime_type = uploaded_file.type or "image/png"
 
-        # Step 2 — Extract math content from the photo
+        # Step 2 - Extract math content from the photo
         if st.button("Extract Math Content", type="primary"):
             if not health:
                 st.error("Backend not connected. Please start the backend server.")
@@ -891,12 +895,12 @@ elif st.session_state.current_page == "Photo to Animation":
 
                 st.rerun()
 
-    # Step 3 — Let the user review and edit the extracted text
+    # Step 3 - Let the user review and edit the extracted text
     if st.session_state.photo_extracted_text:
         st.subheader("Extracted Content")
         st.caption(
             "Review the text below. Fix any mistakes before generating "
-            "the animation — this is what the AI will animate."
+            "the animation - this is what the AI will animate."
         )
 
         edited_text = st.text_area(
@@ -934,7 +938,7 @@ elif st.session_state.current_page == "Photo to Animation":
 
                 st.rerun()
 
-    # Step 4 — Show generated code with edit option
+    # Step 4 - Show generated code with edit option
     if st.session_state.photo_generated_code:
         st.markdown("---")
         st.subheader("Generated Manim Code")
@@ -966,9 +970,9 @@ elif st.session_state.current_page == "Photo to Animation":
                         st.rerun()
             with col_info:
                 if edited_code != st.session_state.photo_generated_code:
-                    st.caption("Unsaved changes — click Save Changes")
+                    st.caption("Unsaved changes - click Save Changes")
 
-        # Step 5 — Compile the video
+        # Step 5 - Compile the video
         st.markdown("---")
         col_vid_btn, col_vid_info = st.columns([1, 2])
 
@@ -1013,7 +1017,7 @@ elif st.session_state.current_page == "Photo to Animation":
                             if regen_code:
                                 st.session_state.photo_generated_code = regen_code
                             st.session_state.photo_video_path = regen_result
-                            st.success("Code fixed automatically — video is ready!")
+                            st.success("Code fixed automatically - video is ready!")
                         else:
                             st.session_state.photo_video_error = (
                                 f"--- Initial error ---\n{compile_error}\n\n"
@@ -1032,7 +1036,7 @@ elif st.session_state.current_page == "Photo to Animation":
             with st.expander("View Error Details", expanded=True):
                 st.code(st.session_state.photo_video_error, language="text")
 
-        # Step 6 — Display the video + teaching script + narration
+        # Step 6 - Display the video + teaching script + narration
         if st.session_state.photo_video_path and os.path.exists(st.session_state.photo_video_path):
             from shared_components import (
                 render_video_player, render_teaching_script_section,
@@ -1065,6 +1069,7 @@ elif st.session_state.current_page == "Photo to Animation":
                 final_error_key="photo_final_error",
                 prefix="photo",
                 merge_video_audio_api=merge_video_audio_api,
+                code_key="photo_generated_code",
             )
 
             render_audio_preview(
