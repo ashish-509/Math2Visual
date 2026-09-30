@@ -40,7 +40,7 @@ from src.config import (
     QUALITY_FLAGS, DEFAULT_QUALITY, MANIM_RENDER_TIMEOUT, MANIM_DRYRUN_TIMEOUT,
     FFMPEG_TIMEOUT, FFPROBE_TIMEOUT, MAX_WORKERS, MAX_RETRIES_COMPILE,
     MAX_RETRIES_REGEN, SPEAKING_RATE_WPS, NARRATION_MAX_TOKENS,
-    NARRATION_TEMPERATURE, AUDIO_BITRATE, AUDIO_CODEC,
+    NARRATION_TEMPERATURE, AUDIO_BITRATE, AUDIO_CODEC, AUDIO_SAMPLE_RATE,
     SPEED_FACTOR_MIN, SPEED_FACTOR_MAX, OUTPUTS_DIR,
 )
 from src.logging_utils import setup_logging, new_request_id, log_timing
@@ -130,10 +130,13 @@ except ImportError as e:
 
 # Segment-based audio-video sync engine
 try:
-    from src.tts.segment_sync import sync_narration_to_video
+    from src.tts.segment_sync import sync_narration_to_video, build_slide_plan, split_segments, segments_for_slides
+    from src.tts.math_speech import speakable_math
     SEGMENT_SYNC_AVAILABLE = True
 except ImportError as e:
     SEGMENT_SYNC_AVAILABLE = False
+    speakable_math = lambda text: text
+    split_segments = lambda text: None
     logger.warning(f"Segment sync not available: {e}")
 
 # Edge-TTS engine (SSML pauses, higher quality voice)
@@ -216,11 +219,15 @@ async def preload_models():
             except Exception as e:
                 logger.warning(f"Chatbot preload failed: {e}")
     
-    # Run all preloading tasks in parallel
+    # Run all preloading tasks in parallel, in the background so the server
+    # starts accepting requests (e.g. /health) immediately.
     preload_tasks = [load_rag, load_groq_codellama, load_groq_phi2, load_chatbot]
-    await asyncio.gather(*[loop.run_in_executor(executor, task) for task in preload_tasks])
-    
-    logger.info("Model preloading complete!")
+
+    async def run_preload():
+        await asyncio.gather(*[loop.run_in_executor(executor, task) for task in preload_tasks])
+        logger.info("Model preloading complete!")
+
+    app.state.preload_task = asyncio.create_task(run_preload())
 
 
 
@@ -506,9 +513,9 @@ def clean_text_for_tts(text: str) -> str:
         r'^\s*Error',  # Errors
         r'^\s*\w+\s*=\s*\w+\(',  # Variable assignments like x = Circle()
         r'^\s*return\s+',  # Return statements
-        r'^\s*if\s+.*:',  # If statements
-        r'^\s*for\s+.*:',  # For loops
-        r'^\s*while\s+.*:',  # While loops
+        r'^\s*if\s+.*:\s*$',  # If statements
+        r'^\s*for\s+\w+\s+in\s+.*:\s*$',  # For loops
+        r'^\s*while\s+.*:\s*$',  # While loops
         r'^\s*try:',  # Try blocks
         r'^\s*except',  # Except blocks
         r'^\s*\[',  # Lists
@@ -598,10 +605,18 @@ def clean_text_for_tts(text: str) -> str:
     result = re.sub(r'\s+', ' ', result)  # Normalize whitespace
     
     # Final cleanup - remove any remaining technical artifacts
-    result = re.sub(r'\b(def|class|import|from|self|return|if|else|for|while|try|except)\b', '', result)
+    result = re.sub(r'\b(def|import|self|lambda)\b', '', result)
     result = re.sub(r'\s+', ' ', result)  # Normalize whitespace again
     
     return result.strip()
+
+
+def prepare_for_tts(text: str) -> str:
+    """Drop [n] segment markers and markdown, strip code/meta junk, then turn math notation into words."""
+    segs = split_segments(text)
+    flat = " ".join(segs) if segs else (text or "")
+    flat = re.sub(r"\*{1,2}([^*\n]+?)\*{1,2}", r"\1", flat)
+    return speakable_math(clean_text_for_tts(flat))
 
 
 def check_latex_available() -> bool:
@@ -1233,9 +1248,9 @@ def compile_video(code: str, quality: str = "medium") -> tuple:
         logger.info(f"Saved script to: {script_path}")
         logger.info(f"Compiling class: {class_name}")
         
-        # Build Manim command
+        # Build Manim command (via the current interpreter so PATH/venv shims don't matter)
         cmd = [
-            "manim",
+            sys.executable, "-m", "manim",
             quality_flag,
             script_path,
             class_name,
@@ -1527,168 +1542,69 @@ Please generate corrected code that fixes this error."""
 
 
 
+NARRATION_SYSTEM_PROMPT = """You write voice-over scripts for short math teaching animations.
+Output ONLY the numbered narration lines requested, exactly in the form "[n] text", one per line, nothing before or after.
+Write plain spoken English for a text-to-speech engine: spell every formula out in words ("x squared", "pi times r squared", "equals", "plus", "the square root of"). Never use symbols such as ^ = + * / < >, LaTeX, code, markdown, quotation marks, or any brackets other than the [n] prefix.
+Never describe the screen ("we see", "notice", "appears", "animation") and never mention rendering, speed or quality. Teach the mathematics: what it is, why it works, what the result means."""
+
+
 def generate_teaching_script_text(description: str, code: str, model_choice: str, video_duration: float = 0.0) -> tuple:
     if not description or not description.strip():
         return False, "Please provide a description first"
-    
     if not code or not code.strip():
         return False, "Please generate the animation code first"
-    
-    # Calculate target word count based on video duration
-    if video_duration > 0:
-        target_words = int(video_duration * SPEAKING_RATE_WPS)
-        duration_instruction = f"""
-CRITICAL TIMING REQUIREMENT:
-- The video is exactly {video_duration:.1f} seconds long
-- Your script must be approximately {target_words} words (speaking at normal pace)
-- This ensures the narration matches the video perfectly
-- Count your words carefully to match this target
-- Do not exceed {target_words + 20} words or go below {max(target_words - 20, 30)} words"""
-    else:
-        duration_instruction = ""
+    if not (SEGMENT_SYNC_AVAILABLE and SCENE_TIMER_AVAILABLE):
+        return False, "Segment sync module not available"
+    if not GROQ_AVAILABLE:
+        return False, "Groq client not available"
 
-    # inject scene-level timing info so the LLM knows what happens when
-    timing_block = ""
-    content_block = ""
-    if SCENE_TIMER_AVAILABLE:
-        try:
-            timeline = parse_scene_timing(code)
-            timing_block = timeline.as_prompt_block()
-        except Exception as e:
-            logger.debug(f"Scene timer skipped: {e}")
-        try:
-            content_block = build_content_summary(code)
-        except Exception as e:
-            logger.debug(f"Content extraction skipped: {e}")
+    # One narration line per visual slide; the same plan drives the audio sync later
+    plan = build_slide_plan(code, video_duration)
+    total = plan[-1].start + plan[-1].duration
+    seg_lines = []
+    for i, sl in enumerate(plan, 1):
+        budget = max(4, int(sl.duration * SPEAKING_RATE_WPS * 0.85))  # edge-tts speaks ~2.1 wps
+        parts = []
+        if sl.texts:
+            parts.append("text: " + "; ".join(f'"{speakable_math(t)}"' for t in sl.texts))
+        if sl.targets:
+            parts.append("visuals: " + ", ".join(sl.targets[:5]))
+        seg_lines.append(f"[{i}] {sl.start:.1f}s-{sl.start + sl.duration:.1f}s, max {budget} words, "
+                         f"on screen -> {' | '.join(parts) or 'transition only'}")
+    segments_block = "\n".join(seg_lines)
 
-    # Build compact code summary (strip blank lines, limit length)
-    code_lines = [ln for ln in code.splitlines() if ln.strip()]
-    # Keep the construct() body only (most relevant for narration)
-    in_construct = False
-    construct_lines: list[str] = []
-    for ln in code_lines:
-        if "def construct" in ln:
-            in_construct = True
-            continue
-        if in_construct:
-            if ln and not ln[0].isspace() and not ln.startswith("#"):
-                break  # left the method
-            construct_lines.append(ln)
-    code_summary = "\n".join(construct_lines[:80]) if construct_lines else "\n".join(code_lines[:80])
-    
-    # Build the teaching prompt - designed for perfect audio-video sync
-    teaching_prompt = f"""You are creating a voiceover script for a math teaching video animation.
+    teaching_prompt = f"""Write the voice-over for a {total:.0f}-second math animation about: "{description}".
+The video has {len(plan)} segments. Write one narration line per segment, in order.
 
-==============================================================================
-                         STRICT OUTPUT FORMAT
-==============================================================================
+SEGMENTS (time range, word budget, what is on screen - text already in spoken form):
+{segments_block}
 
-- Output ONLY the spoken narration text (plain words, nothing else).
-- Start speaking IMMEDIATELY about the math concept.
-- NO meta-text ("Here is the narration:", "Sure", "Certainly"...).
-- NO markdown, headers, bullet points, code, timestamps, or formatting.
-- NO greetings ("Hello", "Welcome", "In this video").
-- NO visual descriptions ("We see a circle appearing", "Notice how").
-- NO technical terms about rendering (speed, quality, fps, version, resolution, pixels, render, low/medium/high quality).
-- Just plain, flowing, spoken words.
+OUTPUT: exactly {len(plan)} lines, formatted as
+[1] narration for segment 1
+[2] narration for segment 2
+and so on. No other text.
 
-==============================================================================
-                         WHAT TO NARRATE
-==============================================================================
+RULES:
+- Stay within each segment's word budget; the voice must finish before the next segment starts.
+- Explain the math that appears in that segment, reading formulas aloud exactly as given, in words.
+- Segment 1 starts teaching immediately (no greeting). The last segment ends with one short takeaway.
+- Spoken words only: no symbols, LaTeX, code, markdown, stage directions or screen descriptions."""
 
-Topic: "{description}"
-{duration_instruction}
-{timing_block}
-
-==============================================================================
-                ANIMATION CODE (what the viewer actually sees)
-==============================================================================
-
-{code_summary}
-
-==============================================================================
-               TEXT & FORMULAS SHOWN ON SCREEN
-==============================================================================
-
-{content_block if content_block else '(no text objects detected)'}
-
-==============================================================================
-                   FRAME-BY-FRAME SYNC INSTRUCTIONS
-==============================================================================
-
-Study the animation code AND the visual content list above carefully.
-Your narration MUST match what actually appears on screen:
-
-- When a TITLE appears → speak 1-2 sentences introducing the main concept.
-- When EXPLANATION TEXT appears → explain that specific point concisely.
-- When a GRAPH / PLOT appears → describe what the graph represents mathematically.
-- When a FORMULA appears → read the formula aloud in spoken words and explain its meaning.
-- When a SHAPE / VISUAL is created → explain the geometric meaning.
-- During each PAUSE → use the pause duration to finish your current thought.
-- At the END → one brief concluding sentence.
-- When a step is FADED OUT and a new step FADES IN → move your narration to the new step.
-
-CRITICAL: Narrate the EXACT formulas and text that appear in the code.
-Do NOT invent steps, formulas, or results that are not in the code.
-If the code shows "2x + 3 = 7", say "two x plus three equals seven" - do not change it.
-
-Pacing rule: speak ~2.5 words per second. Match your word count to each segment's duration.
-
-==============================================================================
-                         CONTENT STYLE
-==============================================================================
-
-- Teach WHY and HOW - not just WHAT.
-- Be concise: one clear idea per animation event.
-- Use simple language - as if explaining to a student.
-- Sound like an enthusiastic, clear teacher.
-- Include the math: "The derivative two x tells us the slope at any point."
-
-==============================================================================
-
-Now write ONLY the narration. Start speaking immediately about "{description}"."""
-    
-    # Use the selected model
-    if model_choice == "Mistral-7B (Finetuned)":
-        if not RAG_FINETUNED_AVAILABLE:
-            # Fall back to CodeLlama
-            model_choice = "CodeLlama-34B"
-        else:
-            try:
-                pipeline = get_rag_finetuned_cached()
-                if pipeline is None:
-                    model_choice = "CodeLlama-34B"
-                else:
-                    script = pipeline.generate_manim_code(teaching_prompt, use_rag=False)
-                    return True, script
-            except Exception as e:
-                logger.warning(f"Finetuned model failed: {e}")
-                model_choice = "CodeLlama-34B"
-    
-    # Use Groq API
-    if model_choice in ["CodeLlama-34B", "Phi-2"]:
-        if not GROQ_AVAILABLE:
-            return False, "Groq client not available"
-        
-        try:
-            model_type = "codellama" if model_choice == "CodeLlama-34B" else "phi2"
-            groq_client = get_groq_client_cached(model_type)
-            
-            if groq_client is None:
-                return False, "Failed to initialize Groq client"
-            
-            # Use generate_narration() NOT generate() - this uses a narration-specific prompt
-            script = groq_client.generate_narration(
-                teaching_prompt, max_tokens=NARRATION_MAX_TOKENS,
-                temperature=NARRATION_TEMPERATURE,
-                manim_code=code,
-            )
-            return True, script
-            
-        except Exception as e:
-            return False, f"Error generating script: {str(e)}"
-    
-    return False, f"Unknown model: {model_choice}"
+    try:
+        # Narration always uses the API models (the finetuned model only writes code)
+        llm = get_groq_client_cached("phi2" if model_choice == "Phi-2" else "codellama")
+        if llm is None:
+            return False, "Failed to initialize LLM client"
+        raw = llm.generate_chat_response(teaching_prompt, NARRATION_SYSTEM_PROMPT,
+                                         max_tokens=NARRATION_MAX_TOKENS, temperature=0.4)
+        if not raw or raw.startswith("I'm sorry, I encountered an error"):
+            return False, raw or "Empty narration"
+        segments = segments_for_slides(raw, plan, prepare_for_tts)
+        if not any(s.strip() for s in segments):
+            return False, "Narration was empty after cleaning"
+        return True, "\n".join(f"[{i}] {s}" for i, s in enumerate(segments, 1))
+    except Exception as e:
+        return False, f"Error generating script: {str(e)}"
 
 
 def generate_tts_audio_file(text: str) -> Optional[str]:
@@ -1696,7 +1612,7 @@ def generate_tts_audio_file(text: str) -> Optional[str]:
         return None
     
     # Clean the text - remove any code, warnings, or technical content that shouldn't be read
-    cleaned_text = clean_text_for_tts(text)
+    cleaned_text = prepare_for_tts(text)
     
     if not cleaned_text or not cleaned_text.strip():
         return None
@@ -1783,7 +1699,7 @@ def merge_video_with_audio(video_path: str, audio_text: str, manim_code: str = N
         return False, "No audio text provided"
     
     # Clean the audio text - remove any code, warnings, or technical content
-    cleaned_audio_text = clean_text_for_tts(audio_text)
+    cleaned_audio_text = prepare_for_tts(audio_text)
     
     if not cleaned_audio_text or not cleaned_audio_text.strip():
         return False, "No speakable content in the audio text after cleaning"
@@ -1813,13 +1729,13 @@ def merge_video_with_audio(video_path: str, audio_text: str, manim_code: str = N
                 return out_path
 
             ok, result = sync_narration_to_video(
-                narration=cleaned_audio_text,
+                narration=audio_text,  # keeps the [n] markers so each line lands on its slide
                 manim_code=manim_code,
                 video_path=video_path,
                 output_path=final_path,
                 tts_func=_tts_func,
                 parse_timing_func=parse_scene_timing,
-                clean_text_func=None,  # already cleaned above
+                clean_text_func=prepare_for_tts,
             )
             if ok:
                 logger.info("Segment-based sync succeeded: %s", result)
@@ -1886,6 +1802,7 @@ def merge_video_with_audio(video_path: str, audio_text: str, manim_code: str = N
                 "-map", "1:a:0",           # Take audio stream from second input
                 "-c:v", "copy",            # Copy video codec (no re-encode)
                 "-c:a", AUDIO_CODEC,
+                "-ar", AUDIO_SAMPLE_RATE,
                 "-b:a", AUDIO_BITRATE,
                 final_video_path
             ]
@@ -1915,6 +1832,7 @@ def merge_video_with_audio(video_path: str, audio_text: str, manim_code: str = N
                 "-map", "1:a:0",           # Take audio from second input
             ] + encoder_opts + [
                 "-c:a", AUDIO_CODEC,
+                "-ar", AUDIO_SAMPLE_RATE,
                 "-b:a", AUDIO_BITRATE,
                 final_video_path
             ]
@@ -1977,13 +1895,9 @@ def root():
 def health_check():
     models_status = {}
     
-    # Check RAG Finetuned model
+    # Check RAG Finetuned model (report cached state only; never load models from a health check)
     if RAG_FINETUNED_AVAILABLE:
-        try:
-            pipeline = get_rag_finetuned_cached()
-            models_status["Mistral-7B (Finetuned)"] = "healthy" if pipeline else "unhealthy"
-        except:
-            models_status["Mistral-7B (Finetuned)"] = "unhealthy"
+        models_status["Mistral-7B (Finetuned)"] = "healthy" if _rag_finetuned_cache else "not loaded"
     else:
         models_status["Mistral-7B (Finetuned)"] = "not available"
     

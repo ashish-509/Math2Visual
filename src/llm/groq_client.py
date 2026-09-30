@@ -19,10 +19,10 @@ class GroqClient:
     Supports different models for different use cases.
     """
     
-    # Available models on Groq
+    # Available models on Groq (llama-3.x models were decommissioned by Groq)
     MODELS = {
-        "codellama": "llama-3.3-70b-versatile",  # Best for code generation
-        "phi2": "llama-3.1-8b-instant"           # Faster, lighter model
+        "codellama": "openai/gpt-oss-120b",  # Best for code generation
+        "phi2": "openai/gpt-oss-20b"        # Faster, lighter model
     }
     
     def __init__(self, api_key=None, model_type="codellama"):
@@ -44,10 +44,43 @@ class GroqClient:
         # Import groq library (install with: pip install groq)
         try:
             from groq import Groq
-            self.client = Groq(api_key=self.api_key)
-            logger.info(f"Groq client initialized with model: {self.model} ({model_type})")
+            self.groq = Groq(api_key=self.api_key)  # always needed: vision model + fallback
         except ImportError:
             raise ImportError("groq library not installed. Run: pip install groq")
+        
+        # Candidate (provider, client, model) chain, tried in order. LIGHTNING_MODEL_<SLOT> may be a
+        # comma-separated list (e.g. "anthropic/claude-opus-4-8,openai/gpt-4.1"); Groq is the last resort.
+        self.candidates = []
+        lightning_models = [m.strip() for m in os.getenv(f"LIGHTNING_MODEL_{model_type.upper()}", "").split(",") if m.strip()]
+        lightning_key = os.getenv("LIGHTNING_API_KEY")
+        if lightning_models and lightning_key:
+            from openai import OpenAI
+            lightning = OpenAI(api_key=lightning_key,
+                               base_url=os.getenv("LIGHTNING_BASE_URL", "https://lightning.ai/api/v1"))
+            self.candidates += [("lightning", lightning, m) for m in lightning_models]
+        self.candidates.append(("groq", self.groq, self.model))
+        self.provider, self.client, self.model = self.candidates[0]
+        logger.info(f"LLM client initialized: {self.provider} / {self.model} ({model_type}); "
+                    f"fallbacks: {[m for _, _, m in self.candidates[1:]]}")
+    
+    def _chat_completion(self, **kwargs):
+        """Run a chat completion against each candidate in order, falling back on any API error
+        (e.g. 401 when a model isn't enabled for the key). Raises the last error if all fail."""
+        kwargs.pop("model", None)
+        last_err = None
+        for provider, client, model in self.candidates:
+            params = dict(kwargs)
+            if "claude" in model.lower():
+                params.pop("top_p", None)  # Anthropic rejects temperature and top_p together
+            try:
+                response = client.chat.completions.create(model=model, **params)
+                if model != self.model:
+                    logger.warning(f"Fell back to {provider}/{model} for slot '{self.model_type}'")
+                return response
+            except Exception as e:
+                last_err = e
+                logger.warning(f"{provider}/{model} failed: {str(e)[:200]}")
+        raise last_err
     
     def generate(self, prompt, max_tokens=2048, temperature=0.7):
         """
@@ -238,7 +271,7 @@ REMEMBER: NEVER use MathTex or Tex. Use Text() for ALL text including math formu
             logger.info(f"Generating code with Groq ({self.model})...")
             
             # Call Groq API
-            chat_completion = self.client.chat.completions.create(
+            chat_completion = self._chat_completion(
                 messages=[
                     {
                         "role": "system",
@@ -304,7 +337,7 @@ When code is included, read every formula/text that appears on screen in spoken 
             logger.info(f"Generating narration with Groq ({self.model})...")
             
             # Call Groq API with narration-specific prompt
-            chat_completion = self.client.chat.completions.create(
+            chat_completion = self._chat_completion(
                 messages=[
                     {
                         "role": "system",
@@ -359,8 +392,8 @@ When code is included, read every formula/text that appears on screen in spoken 
             if any(pattern in stripped for pattern in [
                 'from manim', 'import ', 'def ', 'class ', 'self.', 
                 '```', '.scale(', '.play(', '.wait(', '.move_to(', '.next_to(',
-                'FadeIn', 'FadeOut', 'Create', 'Write', 'Axes(',
-                'MathTex', 'Text(', '= ', 'lambda', 'VGroup', '.plot(',
+                'FadeIn(', 'FadeOut(', 'Create(', 'Write(', 'Axes(',
+                'MathTex', 'Text(', 'lambda', 'VGroup(', '.plot(',
             ]):
                 continue
             # Skip lines starting with common meta-text
@@ -399,7 +432,7 @@ When code is included, read every formula/text that appears on screen in spoken 
             logger.info(f"Generating chat response with Groq ({self.model})...")
             
             # Call Groq API with custom system prompt
-            chat_completion = self.client.chat.completions.create(
+            chat_completion = self._chat_completion(
                 messages=[
                     {
                         "role": "system",
@@ -808,7 +841,7 @@ Generate complete, working code that avoids this error."""
             logger.info("Regenerating code with error feedback...")
             
             # Call the API with focused prompt
-            chat_completion = self.client.chat.completions.create(
+            chat_completion = self._chat_completion(
                 messages=[
                     {
                         "role": "system",
@@ -854,8 +887,8 @@ Output ONLY the corrected Python code, starting with 'from manim import *'."""
     def extract_from_image(self, image_base64, mime_type="image/png"):
         # Use a vision model to read a photo of a math problem and return a plain-text description of what it contains.
 
-        # Llama 4 Scout supports native multimodal (vision) input on Groq
-        vision_model = "meta-llama/llama-4-scout-17b-16e-instruct"
+        # Qwen 3.8 supports native multimodal (vision) input on Groq (Llama 4 Scout was decommissioned)
+        vision_model = os.getenv("GROQ_MODEL_VISION", "qwen/qwen3.8-27b")
 
         system_prompt = (
             "You are a helpful assistant that reads photos of math problems. "
@@ -898,7 +931,7 @@ Output ONLY the corrected Python code, starting with 'from manim import *'."""
 
         try:
             logger.info(f"Extracting math from image with {vision_model}...")
-            response = self.client.chat.completions.create(
+            response = self.groq.chat.completions.create(
                 model=vision_model,
                 messages=messages,
                 max_tokens=1024,
@@ -920,7 +953,8 @@ Output ONLY the corrected Python code, starting with 'from manim import *'."""
             "api_key_set": bool(self.api_key),
             "model": self.model,
             "model_type": self.model_type,
-            "service": "Groq API"
+            "provider": self.provider,
+            "service": "Lightning AI" if self.provider == "lightning" else "Groq API"
         }
 
 

@@ -6,6 +6,7 @@ Uses BGE models for embeddings and optional cross-encoder reranking.
 import os
 import logging
 import pickle
+import threading
 from pathlib import Path
 import numpy as np
 
@@ -17,6 +18,19 @@ except ImportError:
     HAS_DEPS = False
 
 logger = logging.getLogger(__name__)
+
+# Shared model instances. The lock also serializes from_pretrained calls, which
+# race across threads and fail with "Cannot copy out of meta tensor".
+_MODEL_CACHE = {}
+_MODEL_LOCK = threading.Lock()
+
+
+def _load_shared(cls, name, device):
+    key = (cls.__name__, name, device)
+    with _MODEL_LOCK:
+        if key not in _MODEL_CACHE:
+            _MODEL_CACHE[key] = cls(name, device=device)
+        return _MODEL_CACHE[key]
 
 # Models ordered by quality (best first)
 EMBEDDING_MODELS = [
@@ -64,7 +78,7 @@ class SemanticRetriever:
             if not name:
                 continue
             try:
-                return SentenceTransformer(name, device=self.device)
+                return _load_shared(SentenceTransformer, name, self.device)
             except Exception as e:
                 logger.warning(f"Couldn't load {name}: {e}")
         raise RuntimeError("No embedding model available")
@@ -73,7 +87,7 @@ class SemanticRetriever:
         """Load a reranking model if available."""
         for name in RERANKER_MODELS:
             try:
-                return CrossEncoder(name, device=self.device)
+                return _load_shared(CrossEncoder, name, self.device)
             except:
                 continue
         return None
@@ -91,7 +105,10 @@ class SemanticRetriever:
                 with open(cache_file, 'rb') as f:
                     data = pickle.load(f)
                 if len(data['docs']) == len(documents):
-                    self.docs, self.embeddings, self.index = data['docs'], data['emb'], data['idx']
+                    self.docs, self.embeddings = data['docs'], data['emb']
+                    # FAISS objects don't survive pickling; rebuild from embeddings
+                    self.index = faiss.IndexFlatIP(self.dim)
+                    self.index.add(self.embeddings.astype('float32'))
                     logger.info(f"Loaded {len(self.docs)} docs from cache")
                     return True
             except:
@@ -119,7 +136,7 @@ class SemanticRetriever:
             
             # Save cache
             with open(cache_file, 'wb') as f:
-                pickle.dump({'docs': self.docs, 'emb': self.embeddings, 'idx': self.index}, f)
+                pickle.dump({'docs': self.docs, 'emb': self.embeddings}, f)
             
             logger.info(f"Indexed {len(documents)} documents")
             return True

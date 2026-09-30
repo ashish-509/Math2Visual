@@ -14,8 +14,8 @@ DOCS_PATH = os.path.join(PROJECT_ROOT, "crawler", "markdown_output.md")
 
 # Model names (Groq) 
 DEFAULT_MODEL = "CodeLlama-34B"
-GROQ_MODEL_CODELLAMA = os.getenv("GROQ_MODEL_CODELLAMA", "llama-3.3-70b-versatile")
-GROQ_MODEL_PHI2 = os.getenv("GROQ_MODEL_PHI2", "llama-3.1-8b-instant")
+GROQ_MODEL_CODELLAMA = os.getenv("GROQ_MODEL_CODELLAMA", "openai/gpt-oss-120b")
+GROQ_MODEL_PHI2 = os.getenv("GROQ_MODEL_PHI2", "openai/gpt-oss-20b")
 MODEL_CHOICES = ["CodeLlama-34B", "Phi-2", "Mistral-7B (Finetuned)"]
 
 # Video quality presets 
@@ -64,7 +64,8 @@ BACKEND_URL = os.getenv("BACKEND_URL", f"http://localhost:{BACKEND_PORT}")
 
 # Audio encoding 
 AUDIO_BITRATE = "192k"
-AUDIO_CODEC = "aac"
+AUDIO_CODEC = "libmp3lame"  # not aac: browsers without proprietary codecs play AAC-in-MP4 silently
+AUDIO_SAMPLE_RATE = "44100"
 
 # speed adjustment bounds for video-audio sync
 SPEED_FACTOR_MIN = 0.5

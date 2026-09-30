@@ -423,30 +423,13 @@ def get_syntax_info(class_name: str):
         }
 
 
-def capture_audio_input():
+def transcribe_audio(audio_file):
+    # audio_file is a WAV recorded in the browser via st.audio_input
     recognizer = sr.Recognizer()
-    
-    # Settings for better recognition
-    recognizer.energy_threshold = 300
-    recognizer.dynamic_energy_threshold = True
-    recognizer.pause_threshold = 2.0
-    
     try:
-        with sr.Microphone() as source:
-            st.info("Adjusting for background noise...")
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            
-            st.info("Listening for 15 seconds... (Speak now)")
-            audio_data = recognizer.listen(source, timeout=15, phrase_time_limit=12)
-            
-            st.info("Processing your speech...")
-            
-            # Use Google Speech Recognition
-            text = recognizer.recognize_google(audio_data)
-            return text.lower()
-            
-    except sr.WaitTimeoutError:
-        return "Error: No speech detected within 15 seconds."
+        with sr.AudioFile(audio_file) as source:
+            audio_data = recognizer.record(source)
+        return recognizer.recognize_google(audio_data).lower()
     except sr.UnknownValueError:
         return "Error: Could not understand the audio."
     except Exception as e:
@@ -482,8 +465,8 @@ if "original_prompt" not in st.session_state:
 if "teaching_audio_path" not in st.session_state:
     st.session_state.teaching_audio_path = None
 
-if "speech_enabled" not in st.session_state:
-    st.session_state.speech_enabled = False
+if "last_speech_file_id" not in st.session_state:
+    st.session_state.last_speech_file_id = None
 
 if "final_video_path" not in st.session_state:
     st.session_state.final_video_path = None
@@ -623,21 +606,17 @@ if st.session_state.current_page == "Studio":
 
     with col_actions:
         
-        # Speech recognition button
-        if st.button("Enable Speech Recognition"):
-            st.session_state.speech_enabled = True
-            st.rerun()
-        
-        # Handle speech recognition
-        if st.session_state.speech_enabled:
-            text_result = capture_audio_input()
-            if not text_result.startswith("Error"):
-                st.session_state.transcribed_text = text_result
-                st.session_state.speech_enabled = False
-                st.rerun()
-            else:
+        # Speech input: recorded in the browser, so no server-side microphone is needed
+        speech_audio = st.audio_input("Speak your prompt")
+        if speech_audio is not None and speech_audio.file_id != st.session_state.last_speech_file_id:
+            st.session_state.last_speech_file_id = speech_audio.file_id
+            with st.spinner("Transcribing..."):
+                text_result = transcribe_audio(speech_audio)
+            if text_result.startswith("Error"):
                 st.error(text_result)
-                st.session_state.speech_enabled = False
+            else:
+                st.session_state.transcribed_text = text_result
+                st.rerun()
         
         # Generate code button
         if st.button("Generate Code", type="primary"):

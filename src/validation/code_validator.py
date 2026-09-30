@@ -10,6 +10,7 @@ This saves minutes of wasted render time on code that was never going to work.
 import os
 import re
 import ast
+import sys
 import textwrap
 import tempfile
 import subprocess
@@ -126,7 +127,7 @@ class PreRenderValidator:
                 tmp_path = tmp.name
 
             result = subprocess.run(
-                ["manim", "render", "--dry_run", "-ql", tmp_path, class_name],
+                [sys.executable, "-m", "manim", "render", "--dry_run", "-ql", tmp_path, class_name],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,

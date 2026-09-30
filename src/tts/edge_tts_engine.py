@@ -121,7 +121,7 @@ def generate_speech(text: str, output_path: str,
 
     if EDGE_TTS_AVAILABLE:
         try:
-            pauses = compute_pause_points(text, scene_events)
+            pauses = None  # edge-tts >= 7 has no SSML support: markup would be read aloud
             loop = asyncio.new_event_loop()
             try:
                 loop.run_until_complete(

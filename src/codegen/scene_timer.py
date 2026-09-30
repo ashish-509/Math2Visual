@@ -1,19 +1,25 @@
-"""Extract a rough timeline from Manim scene code.
+"""Extract a timeline from Manim scene code.
 
-Parses self.play(), self.wait(), and self.add() calls to estimate when
-each visual event occurs. Used to inject timing hints into the teaching-
-script prompt so the narration aligns with the animation.
+Parses self.play(), self.wait(), self.add(), self.clear() and self.remove()
+calls in source order to estimate when each visual event occurs, which
+variables it animates and which on-screen strings it shows.  Drives the
+narration slide plan and the audio sync.
 """
 
 import ast
 import re
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List, Tuple
 
 
 # default durations (seconds) used by Manim community edition
 _DEFAULT_PLAY_DURATION = 1.0
 _DEFAULT_WAIT_DURATION = 1.0
+
+_TEXT_CLASSES = {"Text", "MathTex", "Tex", "Title", "MarkupText", "Paragraph", "BulletedList"}
+# Manim defaults: Write/Unwrite run 2 s when the target has >= 15 glyphs; DrawBorderThenFill always 2 s
+_WRITE_LIKE = {"Write", "Unwrite"}
+_TWO_SECOND = {"DrawBorderThenFill"}
 
 
 @dataclass
@@ -21,6 +27,8 @@ class SceneEvent:
     start: float
     duration: float
     label: str
+    texts: List[str] = field(default_factory=list)    # on-screen strings this event shows
+    targets: List[str] = field(default_factory=list)  # variable names it animates
 
 
 @dataclass
@@ -39,35 +47,93 @@ class SceneTimeline:
 
 
 def _animation_label(node: ast.Call) -> str:
-    """Best-effort human-readable label for a Manim animation call."""
+    """Human-readable label for a Manim animation call: the animation class (or .animate method)
+    of each positional argument, e.g. 'FadeOut → FadeIn'. Handles *[...] comprehensions."""
     parts = []
     for arg in node.args:
-        src = ast.dump(arg)
-        # pull out animation class name if present (e.g. FadeIn, Create)
-        m = re.search(r"func=Name\(id='(\w+)'\)", src)
-        if m:
-            parts.append(m.group(1))
-            continue
-        m = re.search(r"attr='(\w+)'", src)
-        if m:
-            parts.append(m.group(1))
-            continue
-        m = re.search(r"id='(\w+)'", src)
-        if m:
-            parts.append(m.group(1))
+        name = None
+        for sub in ast.walk(arg):  # breadth-first, so the outermost call wins
+            if isinstance(sub, ast.Call):
+                name = sub.func.id if isinstance(sub.func, ast.Name) else getattr(sub.func, "attr", None)
+                if name:
+                    break
+        if name is None:
+            for sub in ast.walk(arg):
+                if isinstance(sub, (ast.Attribute, ast.Name)):
+                    name = getattr(sub, "attr", None) or getattr(sub, "id", None)
+                    break
+        parts.append(name or "animation")
     return " → ".join(parts) if parts else "animation"
 
 
 def _extract_run_time(node: ast.Call) -> float | None:
     """Return explicit run_time= kwarg if present."""
     for kw in node.keywords:
-        if kw.arg == "run_time":
-            if isinstance(kw.value, (ast.Constant,)):
-                try:
-                    return float(kw.value.value)
-                except (TypeError, ValueError):
-                    pass
+        if kw.arg == "run_time" and isinstance(kw.value, ast.Constant):
+            try:
+                return float(kw.value.value)
+            except (TypeError, ValueError):
+                pass
     return None
+
+
+def _extract_string_arg(node: ast.expr) -> str | None:
+    """Return a plain-text representation of the first string argument."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):  # f-string
+        return "".join(str(v.value) if isinstance(v, ast.Constant) else "{...}" for v in node.values)
+    return None
+
+
+def _iter_stmts(stmts):
+    """Yield statements in source order, descending into compound statements."""
+    for s in stmts:
+        yield s
+        for attr in ("body", "orelse", "finalbody"):
+            inner = getattr(s, attr, None)
+            if isinstance(inner, list):
+                yield from _iter_stmts(inner)
+        for handler in getattr(s, "handlers", None) or []:
+            yield from _iter_stmts(handler.body)
+
+
+def _inline_texts(node: ast.AST) -> List[str]:
+    """Strings passed to Text()-like constructors anywhere inside *node*."""
+    out: List[str] = []
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call) and sub.args:
+            name = sub.func.id if isinstance(sub.func, ast.Name) else getattr(sub.func, "attr", None)
+            if name in _TEXT_CLASSES:
+                s = _extract_string_arg(sub.args[0])
+                if s:
+                    out.append(s)
+    return out
+
+
+def _referenced(node: ast.AST, assigned: Dict[str, List[str]]) -> Tuple[List[str], List[str]]:
+    """(on-screen texts, assigned variable names) referenced by an expression."""
+    texts = _inline_texts(node)
+    names: List[str] = []
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and sub.id in assigned and sub.id not in names:
+            names.append(sub.id)
+            texts.extend(assigned[sub.id])
+    return list(dict.fromkeys(texts)), names
+
+
+def _default_play_duration(call: ast.Call, assigned: Dict[str, List[str]]) -> float:
+    dur = _DEFAULT_PLAY_DURATION
+    for sub in ast.walk(call):
+        if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
+            continue
+        if sub.func.id in _TWO_SECOND:
+            dur = 2.0
+        elif sub.func.id in _WRITE_LIKE:
+            texts, _ = _referenced(sub, assigned)
+            if sum(len(t.replace(" ", "")) for t in texts) >= 15:
+                dur = 2.0
+    return dur
 
 
 def parse_scene_timing(code: str) -> SceneTimeline:
@@ -78,52 +144,45 @@ def parse_scene_timing(code: str) -> SceneTimeline:
         return SceneTimeline()
 
     events: List[SceneEvent] = []
-    cursor = 0.0  # current time in seconds
+    cursor = 0.0
+    assigned: Dict[str, List[str]] = {}  # variable name -> texts it displays
 
-    # walk the construct method body
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
+        if not isinstance(node, ast.FunctionDef) or node.name != "construct":
             continue
-        for item in ast.walk(node):
-            if not isinstance(item, ast.FunctionDef):
+        for stmt in _iter_stmts(node.body):
+            if isinstance(stmt, ast.Assign):
+                texts, _ = _referenced(stmt.value, assigned)
+                for tgt in stmt.targets:
+                    if isinstance(tgt, ast.Name):
+                        assigned[tgt.id] = texts
                 continue
-            if item.name != "construct":
+            if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Call):
                 continue
-            for stmt in ast.walk(item):
-                if not isinstance(stmt, ast.Expr):
-                    continue
-                call = stmt.value
-                if not isinstance(call, ast.Call):
-                    continue
-                func = call.func
-                # match self.play(...) / self.wait(...) / self.add(...)
-                if not (isinstance(func, ast.Attribute) and
-                        isinstance(func.value, ast.Name) and
-                        func.value.id == "self"):
-                    continue
+            call = stmt.value
+            func = call.func
+            if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                    and func.value.id == "self"):
+                continue
 
-                method = func.attr
-
-                if method == "play":
-                    dur = _extract_run_time(call) or _DEFAULT_PLAY_DURATION
-                    label = _animation_label(call)
-                    events.append(SceneEvent(start=cursor, duration=dur, label=label))
-                    cursor += dur
-
-                elif method == "wait":
-                    dur = _DEFAULT_WAIT_DURATION
-                    if call.args:
-                        arg0 = call.args[0]
-                        if isinstance(arg0, ast.Constant):
-                            try:
-                                dur = float(arg0.value)
-                            except (TypeError, ValueError):
-                                pass
-                    events.append(SceneEvent(start=cursor, duration=dur, label="pause"))
-                    cursor += dur
-
-                elif method == "add":
-                    events.append(SceneEvent(start=cursor, duration=0.0, label="add objects"))
+            texts, targets = _referenced(call, assigned)
+            if func.attr == "play":
+                dur = _extract_run_time(call) or _default_play_duration(call, assigned)
+                events.append(SceneEvent(cursor, dur, _animation_label(call), texts, targets))
+                cursor += dur
+            elif func.attr == "wait":
+                dur = _DEFAULT_WAIT_DURATION
+                if call.args and isinstance(call.args[0], ast.Constant):
+                    try:
+                        dur = float(call.args[0].value)
+                    except (TypeError, ValueError):
+                        pass
+                events.append(SceneEvent(cursor, dur, "pause"))
+                cursor += dur
+            elif func.attr == "add":
+                events.append(SceneEvent(cursor, 0.0, "add objects", texts, targets))
+            elif func.attr in ("clear", "remove"):
+                events.append(SceneEvent(cursor, 0.0, "clear screen", [], targets))
 
     return SceneTimeline(events=events, total_duration=round(cursor, 2))
 
@@ -132,21 +191,6 @@ def parse_scene_timing(code: str) -> SceneTimeline:
 # Visual-content extraction — pulls out all text / formula objects so
 # the narration prompt knows exactly what appears on screen.
 # ---------------------------------------------------------------------------
-
-def _extract_string_arg(node: ast.expr) -> str | None:
-    """Return a plain-text representation of the first string argument."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.JoinedStr):  # f-string
-        parts = []
-        for v in node.values:
-            if isinstance(v, ast.Constant):
-                parts.append(str(v.value))
-            else:
-                parts.append("{...}")
-        return "".join(parts)
-    return None
-
 
 @dataclass
 class VisualElement:
@@ -159,15 +203,7 @@ class VisualElement:
 
 
 def extract_visual_content(code: str) -> List[VisualElement]:
-    """Parse Manim code and return all visible text/formula objects in order.
-
-    Detects:  Text(), MathTex(), Tex(), Title(), MarkupText(), Paragraph(),
-              BulletedList(), and similar text-bearing constructors.
-    """
-    _TEXT_CLASSES = {
-        "Text", "MathTex", "Tex", "Title", "MarkupText",
-        "Paragraph", "BulletedList",
-    }
+    """Parse Manim code and return all visible text/formula objects in order."""
     try:
         tree = ast.parse(code)
     except SyntaxError:
@@ -179,7 +215,6 @@ def extract_visual_content(code: str) -> List[VisualElement]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        # Get class name
         name = None
         if isinstance(node.func, ast.Name):
             name = node.func.id
@@ -188,30 +223,16 @@ def extract_visual_content(code: str) -> List[VisualElement]:
         if name not in _TEXT_CLASSES:
             continue
 
-        # Collect all positional string arguments
-        parts: list[str] = []
-        for arg in node.args:
-            s = _extract_string_arg(arg)
-            if s:
-                parts.append(s)
-
+        parts = [s for s in (_extract_string_arg(a) for a in node.args) if s]
         if parts:
             order += 1
-            elements.append(VisualElement(
-                kind=name,
-                content=" ".join(parts),
-                order=order,
-            ))
+            elements.append(VisualElement(kind=name, content=" ".join(parts), order=order))
 
     return elements
 
 
 def build_content_summary(code: str) -> str:
-    """Return a human-readable summary of all visual content in *code*.
-
-    Suitable for injection into the teaching-script prompt so the LLM
-    knows exactly what text/formulas appear on screen.
-    """
+    """Return a human-readable summary of all visual content in *code*."""
     elements = extract_visual_content(code)
     if not elements:
         return ""
